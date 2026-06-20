@@ -233,6 +233,7 @@ export function fileTransport(opts: FileTransportOptions): Transport {
       if (bufferBytes >= maxBufferBytes) {void flush();}
       else {scheduleFlush();}
     },
+    flush, // drain the buffer to disk on demand (e.g. logger.flush())
     async close() {
       await flush();
     },

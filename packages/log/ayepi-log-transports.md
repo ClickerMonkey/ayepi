@@ -20,10 +20,17 @@ interface Transport {
   readonly name: string
   /** Write one record; `text` is the pre-formatted line. May be async; the logger never awaits it. */
   write(record: LogRecord, text: string): void | Promise<void>
-  /** Optional flush/close. */
+  /** Optional: drain buffered writes without tearing down. Driven by `logger.flush()`. */
+  flush?(): void | Promise<void>
+  /** Optional: flush + release resources. Driven by `logger.close()`. */
   close?(): void | Promise<void>
 }
 ```
+
+`logger.flush()` calls every transport's `flush?()`; `logger.close()` calls every `close?()`.
+Both run in parallel and route a throwing transport to `onError` (they never reject), so one
+bad transport can't abort shutdown. The file transport implements both (`flush` drains the
+buffer; `close` does the same).
 
 The logger writes the same record to **every** configured transport, fire‑and‑forget:
 

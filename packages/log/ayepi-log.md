@@ -48,7 +48,7 @@ This reference is split by topic:
 
 | Import | Exposes |
 | --- | --- |
-| `@ayepi/log` | `createLogger`, `consoleTransport`, the default logger + bound convenience functions, `logWith`/`context`, console interception, `merge`/`deepEqual`/`serializeError`/`getContext`, and all types |
+| `@ayepi/log` | `createLogger`, `consoleTransport`, the default logger + bound convenience functions, `logWith`/`context`, console interception, `logMaybe`, `createSanitizer`/`partialMask`, `resolveLogValue`, `merge`/`deepEqual`/`serializeError`/`getContext`, and all types |
 | `@ayepi/log/file` | `fileTransport`, `FileTransportOptions`, `FsLike` |
 | `@ayepi/log/middleware` | `logMiddleware` def factory, `LogMiddlewareOptions` — frontend‑safe, **no `node:async_hooks`** (peer‑depends on `@ayepi/core`) |
 | `@ayepi/log/server` | `logMiddleware` augmented with `.server(def, { context, logWith? })`, `LogServerOptions` — the impl binder, pulls in `node:async_hooks` (peer‑depends on `@ayepi/core`) |
@@ -123,8 +123,13 @@ interface LoggerConfig {
   /** Error serialization config, including per-level overrides. */
   readonly error?: ErrorConfig
   /** Final hook over the built record before formatting. Return a (possibly modified)
-   *  record to log it, or null/undefined to drop the log entirely. */
+   *  record to log it, or null/undefined to drop the log entirely. Runs before `sanitize`. */
   readonly filter?: (record: LogRecord) => LogRecord | null | undefined
+  /** Declarative redaction/truncation applied to every record (after `filter`) — for both
+   *  direct calls and intercepted console.*. See "Sanitization" below. */
+  readonly sanitize?: SanitizeOptions
+  /** Custom serializers for types you don't own (Request/URL/Buffer/third-party). See "Value resolution". */
+  readonly serializers?: readonly Serializer[]
   /** Observe a pipeline error — a throwing `filter`, an unserializable record, or a transport
    *  whose `write` throws. Logging is best-effort: the line is dropped, never thrown. Off by default. */
   readonly onError?: (err: unknown) => void
@@ -156,7 +161,15 @@ interface Logger {
   context(): Readonly<Record<string, unknown>>
   /** Replace the transports at runtime. */
   setTransports(transports: readonly Transport[]): void
-  /** The effective level/format/timestamp. */
+  /** Change the minimum emitted level at runtime (e.g. bump to 'debug' on demand). */
+  setLevel(level: Level): void
+  /** Whether a record at `level` would be emitted now — guard expensive prep (cf. logMaybe). */
+  isLevelEnabled(level: Level): boolean
+  /** Drain every transport's buffered writes (e.g. the file transport) without closing them. */
+  flush(): Promise<void>
+  /** Flush AND close every transport (release timers/handles) — wire to a shutdown hook. */
+  close(): Promise<void>
+  /** The effective level/format/timestamp (`level` reflects setLevel). */
   readonly config: { readonly level: Level; readonly structured: boolean; readonly timestamp: 'iso' | 'epoch' }
   /** Begin intercepting console.* (idempotent); returns a restore function. */
   interceptConsole(): () => void
@@ -164,6 +177,14 @@ interface Logger {
   restoreConsole(): void
 }
 ```
+
+- **`setLevel` / `isLevelEnabled`** — change verbosity at runtime (an admin endpoint, a signal
+  handler) without recreating the logger; `isLevelEnabled(lvl)` guards an expensive block when
+  `logMaybe` doesn't fit. `config.level` reflects the current level.
+- **`flush` / `close`** — `flush()` drains buffered transports (the file transport) without
+  tearing them down; `close()` flushes **and** releases resources. Both run every transport in
+  parallel and route a failing one to `onError` (never throwing), so one bad transport can't
+  abort shutdown. Wire `close()` into an `@ayepi/updown` teardown hook.
 
 ---
 
@@ -209,6 +230,60 @@ on `key2`.
 log.logWith({ user: 'a' }, () => log.info('hi', { user: 'b' }))
 // → { user: 'a', user2: 'b', msg: 'hi', … }
 ```
+
+### Value resolution — `toLOG` / `toJSON`
+
+Before a value is merged/classified, it's resolved to its **loggable plain shape** (deeply),
+so the resolved shape is consistent everywhere: the record object transports receive, the
+`sanitize` pass, and both the JSON and text output. Two hooks are honored, then a structural
+copy (mirroring `JSON.stringify` — own enumerable entries; `Error`s keep their dedicated
+serialization; cycles are preserved):
+
+- **`toLOG()`** — a **logging-specific** hook that **takes precedence over `toJSON`**. Define it
+  to shape a value for logs alone, without affecting `JSON.stringify` / your API responses. It
+  **may return a promise** — the line is then delivered asynchronously once it resolves (an
+  expensive or async log view is only produced when the line actually logs).
+- **`toJSON(key)`** — the standard hook (e.g. `Date` → ISO string).
+
+```ts
+class Money {
+  constructor(private cents: number) {}
+  toJSON() { return this.cents }                       // API: a number
+  toLOG()  { return `$${(this.cents / 100).toFixed(2)}` } // logs: "$19.99"
+}
+log.info('charged', { amount: new Money(1999) }) // → { msg:'charged', amount:'$19.99' }
+
+class Account {
+  async toLOG() { return { id: this.id, balance: await this.fetchBalance() } } // awaited before logging
+}
+```
+
+- A top-level value whose hook resolves to a **scalar** joins `msg`; to an **object**, merges
+  as fields (so a top-level `toJSON`/`toLOG` no longer clobbers the line).
+- A hook that **throws or rejects** (or a raw promise value that rejects) degrades that value to
+  `'(unresolved value)'` and reports to `onError` — the rest of the line still logs.
+- The exported **`resolveLogValue(value)`** runs this resolution standalone.
+
+**Custom serializers** handle values you *don't* own — a `Request`, `URL`, `Buffer`, a
+third-party class — where you can't add a `toLOG` hook. Configure `serializers` on the logger:
+each is tried in order at every depth, the first non-`undefined` result wins, and serializers
+take **precedence over** a value's own `toLOG`/`toJSON`. Return `undefined` (or throw — it's
+reported) to decline to the next.
+
+```ts
+type Serializer = (value: object) => unknown // return the shape, or undefined to decline
+
+createLogger({
+  serializers: [
+    (v) => (v instanceof URL ? v.href : undefined),
+    (v) => (v instanceof Request ? { method: v.method, url: v.url } : undefined),
+    (v) => (Buffer.isBuffer(v) ? `<${v.length}b>` : undefined),
+  ],
+})
+```
+
+Precedence overall: **serializers → `toLOG` → `toJSON` → structural copy** (`Error`s keep their
+dedicated serialization).
 
 ---
 
@@ -297,13 +372,88 @@ createLogger({
 
 ---
 
+## Sanitization — `sanitize` / `createSanitizer`
+
+Declarative redaction + truncation applied to every record after `filter`, for both direct
+logger calls **and** intercepted `console.*` (it transforms the record before formatting, so
+text and JSON output are both sanitized). Configure it on the logger, or build a standalone
+transformer with `createSanitizer(opts)` (same `(record) => record | null` shape as `filter`,
+so it composes there too).
+
+```ts
+interface SanitizeOptions {
+  /** Drop a record entirely — return false. Runs first. */
+  filter?: (record: LogRecord) => boolean
+  /** Property names to mask — string (case-insensitive exact) or RegExp. Matched at any depth. */
+  sensitiveKeys?: readonly (string | RegExp)[]
+  /** String values to mask when they match — string (case-insensitive substring) or RegExp. */
+  sensitiveValues?: readonly (string | RegExp)[]
+  /** Turn a sensitive value into its masked form (default () => '[redacted]'; see partialMask). */
+  mask?: (value: unknown, key?: string) => unknown
+  /** Truncate strings longer than this; appends '... (+N more)'. */
+  maxStringLength?: number
+  /** Truncate a homogeneous array (all elements same kind) beyond this; appends a '(+N more)' element. */
+  maxArrayLength?: number
+}
+```
+
+```ts
+import { createLogger, partialMask } from '@ayepi/log'
+
+const log = createLogger({
+  sanitize: {
+    sensitiveKeys: ['password', 'authorization', /token$/i], // → '[redacted]'
+    sensitiveValues: [/\b\d{16}\b/],                          // mask card-number-looking strings
+    mask: partialMask(3),                                      // keep first 3 chars, then '***'
+    maxStringLength: 2000,                                     // long blobs → 'first 2000…... (+N more)'
+    maxArrayLength: 100,                                       // big homogeneous arrays → first 100 + '(+N more)'
+  },
+})
+```
+
+- The sanitizer walks **plain** objects and arrays; the reserved `tms` / `level` fields are
+  kept pristine. (In the pipeline, values are already resolved to plain shapes by the
+  `toLOG`/`toJSON` pass above before `sanitize` runs, so `Date`s arrive as strings, etc.)
+- `partialMask(keep = 0, fill = '***')` is the bundled helper (`partialMask(3)('secret') === 'sec***'`;
+  values no longer than `keep`, and the default `keep` of 0, mask fully).
+- Cycles / shared references are left as the original ref (the formatter handles them).
+
+## Deferred arguments — `logMaybe`
+
+`logMaybe(fn)` wraps an expensive argument so `fn` runs **only when the line is actually
+logged** (its level passes the threshold). Under console interception the structured pipeline
+calls `fn(level)` and awaits it, then treats the result as a normal argument (an object is
+merged, a string joins `msg`, an `Error` becomes `record.error`). A line below the threshold
+never invokes `fn` at all.
+
+```ts
+import { logMaybe } from '@ayepi/log'
+
+log.debug('state', logMaybe(() => buildExpensiveSnapshot())) // snapshot built only at debug level
+log.info('user', logMaybe(async (lvl) => loadProfile(lvl)))  // async is awaited before the line is written
+```
+
+```ts
+function logMaybe(fn: (level: Level) => MaybePromise<unknown>): LazyLogValue
+```
+
+- A line containing a top-level `logMaybe` is delivered **asynchronously** (the value is
+  awaited first). Nested `logMaybe` values aren't resolved — they render via `toJSON`.
+- On the **non-intercepted** path the returned value has a `toJSON` (and Node inspect) that
+  renders the synchronous value, or `'(unresolved value)'` when `fn` returns a promise.
+- If `fn` throws / rejects, the argument becomes `'(unresolved value)'` and the error is
+  routed to `onError`.
+
+---
+
 ## Gotchas (overview‑level)
 
 - **Bare import is side‑effect‑free.** Nothing touches `console` until you opt in.
 - **Synchronous throws aren't tagged** with trace context — only promise rejections out of
   `logWith` get the `LOG_CONTEXT` tag.
 - **Threshold drops happen early.** A call below the level threshold never builds a record
-  or runs `filter`, so don't rely on side effects in argument expressions.
+  or runs `filter`, so don't rely on side effects in argument expressions — wrap an expensive
+  argument in `logMaybe(fn)` to compute it only when the line will be logged.
 - **One shared trace store.** Every logger instance shares the package's global
   `AsyncLocalStorage`; you can't get two fully isolated context stores by creating two
   loggers. (More in `ayepi-log-middleware.md`.)

@@ -29,6 +29,8 @@ import {
   DEFAULT_INTERCEPT,
   CONSOLE_LEVEL_MAP,
   LOG_CONTEXT,
+  LOG_MAYBE,
+  UNRESOLVED,
   deepEqual,
   merge,
   serializeError,
@@ -37,11 +39,19 @@ import {
   buildRecord,
   formatText,
   formatJson,
+  isLazy,
+  logMaybe,
+  createSanitizer,
+  partialMask,
+  resolveLogValue,
+  resolveLog,
+  containsThenable,
+  settleDeep,
 } from './internal';
-import type { Level, LogRecord, SerializedError, ErrorConfig, ErrorCaptureConfig, Transport } from './internal';
+import type { Level, LogRecord, SerializedError, ErrorConfig, ErrorCaptureConfig, Transport, SanitizeOptions, LazyLogValue, MaybePromise, Serializer } from './internal';
 
-export { LOG_CONTEXT, deepEqual, merge, serializeError, getContext };
-export type { Level, LogRecord, SerializedError, ErrorConfig, ErrorCaptureConfig, Transport };
+export { LOG_CONTEXT, deepEqual, merge, serializeError, getContext, logMaybe, createSanitizer, partialMask, resolveLogValue };
+export type { Level, LogRecord, SerializedError, ErrorConfig, ErrorCaptureConfig, Transport, SanitizeOptions, LazyLogValue, MaybePromise, Serializer };
 
 /** The minimal `console` surface the logger reads/intercepts (the global one, or your own). */
 export interface ConsoleLike {
@@ -97,9 +107,16 @@ export interface LoggerConfig {
   /**
    * Final hook over the built record before it is formatted. Return a (possibly
    * modified) record to log it — e.g. redact or add fields — or `null`/`undefined`
-   * to drop the log entirely.
+   * to drop the log entirely. Runs **before** {@link sanitize}.
    */
   readonly filter?: (record: LogRecord) => LogRecord | null | undefined;
+  /**
+   * Declarative redaction/truncation applied to every record (after {@link filter}): drop via a
+   * `filter` predicate, mask `sensitiveKeys`/`sensitiveValues`, and cap `maxStringLength` /
+   * `maxArrayLength`. Applies to direct logger calls **and** intercepted `console.*`. (Equivalent
+   * to passing `createSanitizer(opts)` as `filter`, but it composes after your own `filter`.)
+   */
+  readonly sanitize?: SanitizeOptions;
   /**
    * Observe an error from the logging pipeline itself — a throwing `filter`, an
    * unserializable record, or a transport whose `write` throws. Logging is **best-effort**:
@@ -108,6 +125,13 @@ export interface LoggerConfig {
    * if it does, the throw is ignored.
    */
   readonly onError?: (err: unknown) => void;
+  /**
+   * Custom {@link Serializer}s for values the logger doesn't own (a `Request`, `URL`, `Buffer`,
+   * a third-party class…) — the predicate-style counterpart to a `toLOG`/`toJSON` hook. Each is
+   * tried in order at every depth; the first non-`undefined` result wins (taking precedence over
+   * the value's own `toLOG`/`toJSON`). They apply to direct calls and intercepted `console.*`.
+   */
+  readonly serializers?: readonly Serializer[];
   /** Clock injection for tests (default `() => Date.now()`). */
   readonly now?: () => number;
 }
@@ -126,7 +150,15 @@ export interface Logger {
   context(): Readonly<Record<string, unknown>>;
   /** Replace the transports at runtime. */
   setTransports(transports: readonly Transport[]): void;
-  /** The effective level/format/timestamp. */
+  /** Change the minimum emitted level at runtime (e.g. bump to `'debug'` on demand). */
+  setLevel(level: Level): void;
+  /** Whether a record at `level` would be emitted at the current threshold — guard expensive prep. */
+  isLevelEnabled(level: Level): boolean;
+  /** Drain every transport's buffered writes (e.g. the file transport) without closing them. */
+  flush(): Promise<void>;
+  /** Flush **and** close every transport (release timers/handles) — wire to a shutdown hook. */
+  close(): Promise<void>;
+  /** The effective level/format/timestamp (`level` reflects {@link setLevel}). */
   readonly config: { readonly level: Level; readonly structured: boolean; readonly timestamp: 'iso' | 'epoch' };
   /** Begin intercepting `console.*` (idempotent); returns a restore function. */
   interceptConsole(): () => void;
@@ -143,7 +175,7 @@ function captureConsole(c: ConsoleLike): ConsoleLike {
  * Create a {@link Logger}.
  */
 export function createLogger(config: LoggerConfig = {}): Logger {
-  const level = config.level ?? DEFAULT_LEVEL;
+  let level = config.level ?? DEFAULT_LEVEL; // mutable: see setLevel
   const structured = config.structured ?? DEFAULT_STRUCTURED;
   const timestamp = config.timestamp ?? 'iso';
   const now = config.now ?? (() => Date.now());
@@ -164,8 +196,11 @@ export function createLogger(config: LoggerConfig = {}): Logger {
     }
   };
 
-  const emit = (lvl: Level, args: readonly unknown[]): void => {
-    if (LEVELS[lvl] < LEVELS[level] || writing) {return;}
+  const sanitize = config.sanitize ? createSanitizer(config.sanitize) : undefined;
+  const resolveOpts = { onError: report, serializers: config.serializers }; // shared per-arg resolution options
+
+  /** Build → filter → sanitize → format → write a record from already-resolved args. */
+  const deliver = (lvl: Level, args: readonly unknown[]): void => {
     // building, filtering, and formatting the line are best-effort: a throw here (a bad
     // `filter`, an unserializable field) drops the line and is reported, never propagated.
     let record: LogRecord;
@@ -176,6 +211,11 @@ export function createLogger(config: LoggerConfig = {}): Logger {
         const filtered = config.filter(record);
         if (!filtered) {return;} // dropped by the filter
         record = filtered;
+      }
+      if (sanitize) {
+        const cleaned = sanitize(record);
+        if (!cleaned) {return;} // dropped by sanitize.filter
+        record = cleaned;
       }
       text = structured ? formatJson(record) : formatText(record);
     } catch (err) {
@@ -193,6 +233,37 @@ export function createLogger(config: LoggerConfig = {}): Logger {
       }
     } finally {
       writing = false;
+    }
+  };
+
+  /** Produce a {@link logMaybe}'s value for this level (only now that we know we'll log), or pass through. */
+  const seedArg = (raw: unknown, lvl: Level): unknown => {
+    if (!isLazy(raw)) {return raw;}
+    try {
+      return raw[LOG_MAYBE](lvl);
+    } catch (err) {
+      report(err);
+      return UNRESOLVED;
+    }
+  };
+
+  const emit = (lvl: Level, args: readonly unknown[]): void => {
+    if (LEVELS[lvl] < LEVELS[level] || writing) {return;} // below threshold → never touch (or run) the args
+    // resolve toLOG/toJSON/logMaybe/promises into loggable shapes up front (best-effort).
+    let resolved: unknown[];
+    try {
+      resolved = args.map((raw) => resolveLog(seedArg(raw, lvl), '', new WeakSet(), resolveOpts));
+    } catch (err) {
+      report(err); // a throwing hook *getter* (the call itself is already guarded) — drop the line
+      return;
+    }
+    // a synchronous line delivers immediately; only an async toLOG / logMaybe / promise defers it.
+    if (resolved.some((v) => containsThenable(v))) {
+      void settleDeep(resolved)
+        .then((settled) => deliver(lvl, settled as unknown[]))
+        .catch(report);
+    } else {
+      deliver(lvl, resolved);
     }
   };
 
@@ -217,6 +288,18 @@ export function createLogger(config: LoggerConfig = {}): Logger {
     return restore;
   };
 
+  /** Run `op` over every transport in parallel, awaiting all and reporting (never throwing) failures. */
+  const drain = (op: (t: Transport) => void | Promise<void>): Promise<void> =>
+    Promise.all(
+      transports.map(async (t) => {
+        try {
+          await op(t);
+        } catch (err) {
+          report(err); // one transport's flush/close failure must not abort the rest
+        }
+      }),
+    ).then(() => undefined);
+
   const logger: Logger = {
     log: (lvl, ...args) => emit(lvl, args),
     debug: (...args) => emit('debug', args),
@@ -228,7 +311,19 @@ export function createLogger(config: LoggerConfig = {}): Logger {
     setTransports: (t) => {
       transports = t;
     },
-    config: { level, structured, timestamp },
+    setLevel: (l) => {
+      level = l;
+    },
+    isLevelEnabled: (l) => LEVELS[l] >= LEVELS[level],
+    flush: () => drain((t) => t.flush?.()),
+    close: () => drain((t) => t.close?.()),
+    config: {
+      get level() {
+        return level; // reflects setLevel
+      },
+      structured,
+      timestamp,
+    },
     interceptConsole: install,
     restoreConsole: restore,
   };

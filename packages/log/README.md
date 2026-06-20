@@ -37,6 +37,58 @@ log.error('upload failed', err, { docId })
 // { tms, level:'error', msg:'upload failed', docId, error:{ name, message, stack, cause… }, …throwSiteContext }
 ```
 
+## Value resolution — `toLOG` / `toJSON`
+
+Logged values are resolved to a plain **loggable shape** (deeply) before they're merged — so
+the same shape appears in the record transports receive, the `sanitize` pass, and both the text
+and JSON output. A value's **`toLOG()`** hook (logging-specific, **wins over `toJSON`**) or
+`toJSON()` (e.g. `Date`) defines that shape; otherwise it's a structural copy.
+
+```ts
+class Money {
+  constructor(private cents: number) {}
+  toJSON() { return this.cents }                          // API responses: a number
+  toLOG()  { return `$${(this.cents / 100).toFixed(2)}` } // logs: "$19.99"
+}
+log.info('charged', { amount: new Money(1999) }) // → …, amount: "$19.99"
+```
+
+`toLOG()` **may return a promise** — the line is delivered once it resolves, so an expensive or
+async log view is built only when the line actually logs:
+
+```ts
+log.debug('account', { acct: { toLOG: async () => ({ id, balance: await loadBalance() }) } })
+```
+
+A hook that throws/rejects degrades that value to `'(unresolved value)'` (reported to
+`onError`); the rest of the line still logs. `resolveLogValue(value)` runs this standalone.
+
+For types you **don't** own (a `Request`, `URL`, `Buffer`, a third-party class), configure
+`serializers` — predicate functions tried in order at every depth (first non-`undefined` wins,
+taking precedence over `toLOG`/`toJSON`):
+
+```ts
+createLogger({
+  serializers: [
+    (v) => (v instanceof URL ? v.href : undefined),
+    (v) => (v instanceof Request ? { method: v.method, url: v.url } : undefined),
+  ],
+})
+```
+
+## Runtime control & shutdown
+
+```ts
+log.setLevel('debug')        // change the threshold at runtime (admin toggle, signal handler)
+log.isLevelEnabled('debug')  // guard an expensive block when logMaybe doesn't fit
+
+await log.flush()            // drain buffered transports (e.g. the file transport)
+await log.close()            // flush + release timers/handles — wire into an @ayepi/updown teardown
+```
+
+`flush`/`close` run every transport in parallel and route a failing one to `onError`, so one
+bad transport can't abort shutdown.
+
 ## Context stacking — `logWith`
 
 `logWith(add, inner)` merges `add` into the ambient context (immutably) and runs
@@ -76,6 +128,45 @@ import { interceptConsole, createLogger } from '@ayepi/log'
 createLogger({ interceptConsole: true }) // or: const restore = interceptConsole()
 console.log('routed', { through: 'the logger' }) // log/info/debug/warn/error/trace/dir
 ```
+
+## Sanitization — `sanitize`
+
+Declarative redaction + truncation on every record (direct calls **and** intercepted
+`console.*`). Mask by key or value, cap string/array sizes, or drop a record outright:
+
+```ts
+import { createLogger, partialMask } from '@ayepi/log'
+
+createLogger({
+  sanitize: {
+    filter: (r) => r.level !== 'debug',          // drop a record entirely
+    sensitiveKeys: ['password', /token$/i],       // mask matching property names (any depth)
+    sensitiveValues: [/\b\d{16}\b/],              // mask matching string values
+    mask: partialMask(3),                         // 'secret-token' → 'sec***' (default: '[redacted]')
+    maxStringLength: 2000,                        // long string → 'first 2000…... (+N more)'
+    maxArrayLength: 100,                          // big homogeneous array → first 100 + '(+N more)'
+  },
+})
+```
+
+`createSanitizer(opts)` builds the same transformer standalone (it has the `filter` shape, so
+it composes there too). `Date`/class instances and the reserved `tms`/`level` fields are left
+untouched.
+
+## Deferred arguments — `logMaybe`
+
+Compute an expensive log argument **only if the line will actually be logged**. `logMaybe(fn)`
+defers `fn` until the level passes the threshold; the intercepted/structured pipeline then
+calls `fn(level)`, awaits it (async allowed), and treats the result as a normal argument:
+
+```ts
+import { logMaybe } from '@ayepi/log'
+
+log.debug('state', logMaybe(() => buildExpensiveSnapshot())) // snapshot built only at debug level
+```
+
+A line below the threshold never runs `fn`. Outside interception, the value renders via
+`toJSON` (the sync value, or `'(unresolved value)'` for a promise).
 
 ## Middleware — `@ayepi/log/middleware` + `@ayepi/log/server`
 

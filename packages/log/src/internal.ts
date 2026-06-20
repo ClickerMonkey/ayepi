@@ -38,6 +38,8 @@ export const CONSOLE_LEVEL_MAP: Readonly<Record<string, Level>> = {
 const DEFAULT_MAX_CAUSE_DEPTH = 5;
 /** Symbol under which `logWith` stashes the full merged context onto a rejected error. `Symbol.for` → stable across bundled entries. */
 export const LOG_CONTEXT = Symbol.for('@ayepi/log:ctx');
+/** Placeholder substituted for a value whose resolution (a `toLOG`/`toJSON` hook, a `logMaybe`, a promise) threw or rejected. */
+export const UNRESOLVED = '(unresolved value)';
 
 /* ---- shared types ---- */
 /** The log levels, in console-method parity. */
@@ -90,9 +92,19 @@ export interface Transport {
   readonly name: string;
   /** Write one record; `text` is the pre-formatted line. May be async; the logger never awaits it. */
   write(record: LogRecord, text: string): void | Promise<void>;
-  /** Optional flush/close. */
+  /** Optional: drain any buffered writes to their destination (without tearing the transport down). */
+  flush?(): void | Promise<void>;
+  /** Optional: flush and release resources (timers, file handles). The transport isn't used after. */
   close?(): void | Promise<void>;
 }
+
+/**
+ * Shape a value the logger doesn't own (and so can't carry a {@link logMaybe}/`toLOG` hook) —
+ * e.g. a `Request`, `URL`, `Buffer`, or a third-party class. Return the replacement shape, or
+ * `undefined` to decline (the next serializer, then `toLOG`/`toJSON`/a structural copy, is tried).
+ * Applied at **every depth**. Configured via `LoggerConfig.serializers`.
+ */
+export type Serializer = (value: object) => unknown;
 
 /* ---- deep equality (for merge dedup) ---- */
 /** Recursive structural equality. Handles primitives, `Date`, arrays, `Error`, plain objects, and cycles. */
@@ -218,6 +230,116 @@ const effectiveErrorCfg = (level: Level, cfg: ErrorConfig): ErrorCaptureConfig =
   return { ...base, ...perLevel?.[level] };
 };
 
+/** Resolution-time options (internal): error reporting + the app's custom {@link Serializer}s. */
+interface ResolveOptions {
+  readonly onError?: (err: unknown) => void;
+  readonly serializers?: readonly Serializer[];
+}
+
+/** Try each serializer in turn; the first that returns non-`undefined` wins (a throw declines + reports). */
+function runSerializers(value: object, serializers: readonly Serializer[], opts: ResolveOptions): unknown {
+  for (const s of serializers) {
+    let out: unknown;
+    try {
+      out = s(value);
+    } catch (err) {
+      opts.onError?.(err);
+      continue; // a throwing serializer declines, like returning undefined
+    }
+    if (out !== undefined) {return out;}
+  }
+  return undefined; // none handled it
+}
+/** A serialization hook (`toLOG`/`toJSON`) — receives the property key like `JSON.stringify` does. */
+type Hook = (key: string) => unknown;
+
+/** Call a hook, substituting {@link UNRESOLVED} (and reporting) if it throws — logging is best-effort. */
+function safeCall(fn: Hook, ctx: object, key: string, opts: ResolveOptions): unknown {
+  try {
+    return fn.call(ctx, key);
+  } catch (err) {
+    opts.onError?.(err);
+    return UNRESOLVED;
+  }
+}
+
+/**
+ * The resolver core (see {@link resolveLogValue}). `opts.onError` observes a throwing hook or a
+ * rejecting promise; without it, such failures still degrade to {@link UNRESOLVED} (rejections
+ * propagate to the awaiter). A `toLOG`/`toJSON`/promise may resolve asynchronously: the returned
+ * structure then carries embedded promises, which {@link settleDeep} awaits before the record is built.
+ */
+export function resolveLog(value: unknown, key: string, seen: WeakSet<object>, opts: ResolveOptions): unknown {
+  if (value === null || typeof value !== 'object') {return value;}
+  if (opts.serializers) {
+    const s = runSerializers(value, opts.serializers, opts); // app-configured serializers win over the value's own hooks
+    if (s !== undefined) {return resolveLog(s, key, seen, opts);}
+  }
+  if (value instanceof Error) {return value;} // Errors get dedicated serialization in buildRecord
+  if (isThenable(value)) {
+    return (value as PromiseLike<unknown>).then(
+      (r) => resolveLog(r, key, seen, opts), // re-resolve the awaited value (it may have its own hooks)
+      (err) => {
+        opts.onError?.(err);
+        return UNRESOLVED;
+      },
+    );
+  }
+  const toLog = (value as { toLOG?: unknown }).toLOG;
+  if (typeof toLog === 'function') {return resolveLog(safeCall(toLog as Hook, value, key, opts), key, seen, opts);} // log-specific, wins over toJSON
+  const toJson = (value as { toJSON?: unknown }).toJSON;
+  if (typeof toJson === 'function') {return resolveLog(safeCall(toJson as Hook, value, key, opts), key, seen, opts);}
+  if (seen.has(value)) {return value;} // cycle — leave the original ref for the formatter to handle
+  seen.add(value);
+  if (Array.isArray(value)) {return value.map((v, i) => resolveLog(v, String(i), seen, opts));}
+  const src = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(src)) {out[k] = resolveLog(src[k], k, seen, opts);}
+  return out;
+}
+
+/**
+ * Resolve a value to its **loggable plain shape**, deeply and eagerly — so a logged value carries
+ * its intended shape everywhere consistently: in the record object the transports receive, through
+ * the `sanitize` pass, and in both the JSON and text output (not just incidentally when a formatter
+ * happens to stringify it). Two serialization hooks are honored before a structural copy:
+ *
+ * 1. **`toLOG()`** — a logging-specific hook that **takes precedence**: when present, the value
+ *    becomes its result. Use it to shape a value for logs alone, without affecting `JSON.stringify`
+ *    / API responses (which still use `toJSON`). It may return a **promise** (resolved before the
+ *    record is built).
+ * 2. **`toJSON(key)`** — the standard hook `JSON.stringify` uses (e.g. `Date`).
+ *
+ * Objects/arrays without either hook are rebuilt from their own enumerable entries (mirroring
+ * `JSON.stringify`); `Error`s and primitives pass through; cycles are left as the original
+ * reference. A promise anywhere (an async hook, or a raw promise value) becomes its awaited result.
+ */
+export function resolveLogValue(value: unknown, key = '', seen = new WeakSet<object>()): unknown {
+  return resolveLog(value, key, seen, {});
+}
+
+/** True if `value` is, or (deeply) contains, a thenable — i.e. resolving it needs an async pass. */
+export function containsThenable(value: unknown, seen = new WeakSet<object>()): boolean {
+  if (isThenable(value)) {return true;}
+  if (value === null || typeof value !== 'object' || seen.has(value)) {return false;}
+  seen.add(value);
+  if (Array.isArray(value)) {return value.some((v) => containsThenable(v, seen));}
+  return Object.values(value as Record<string, unknown>).some((v) => containsThenable(v, seen));
+}
+
+/** Await every embedded promise in an already-resolved structure, yielding plain data. */
+export async function settleDeep(value: unknown, seen = new WeakSet<object>()): Promise<unknown> {
+  if (isThenable(value)) {return settleDeep(await value, seen);} // the awaited value may itself contain promises
+  if (value === null || typeof value !== 'object') {return value;}
+  if (seen.has(value)) {return value;} // cycle — leave the ref for the formatter's circular guard
+  seen.add(value);
+  if (Array.isArray(value)) {return Promise.all(value.map((v) => settleDeep(v, seen)));}
+  const src = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(src)) {out[k] = await settleDeep(src[k], seen);}
+  return out;
+}
+
 /**
  * Build a {@link LogRecord} from `log()` args. `msg` is the space-joined non-object
  * args; objects and the ambient context are merged (ambient keeps bare keys);
@@ -231,6 +353,8 @@ export function buildRecord(level: Level, args: readonly unknown[], opts: BuildO
   const objects: Record<string, unknown>[] = [];
   const errors: Error[] = [];
   for (const arg of args) {
+    // args arrive already resolved (toLOG/toJSON/promises handled in the logger's emit): an object
+    // merges as fields, an Error takes the dedicated error path, anything else joins `msg`.
     if (arg instanceof Error) {errors.push(arg);}
     else if (arg !== null && typeof arg === 'object') {objects.push(arg as Record<string, unknown>);}
     else {msgParts.push(safeString(arg));}
@@ -292,4 +416,155 @@ export function formatJson(record: LogRecord): string {
     }
     return v;
   });
+}
+
+/* ---- lazy ("maybe") log values ---- */
+
+/** A value produced either synchronously or asynchronously. */
+export type MaybePromise<T> = T | Promise<T>;
+
+/** Symbol marking a {@link logMaybe} value; `Symbol.for` keeps it stable across bundled entries. */
+export const LOG_MAYBE = Symbol.for('@ayepi/log:maybe');
+/** Node's custom-inspect symbol, so a lazy value renders nicely under a non-intercepted `console.log`. */
+const INSPECT = Symbol.for('nodejs.util.inspect.custom');
+
+/** A deferred log argument produced by {@link logMaybe}. */
+export interface LazyLogValue {
+  /** Produce the value for `level` — invoked only when the line will actually be logged. */
+  readonly [LOG_MAYBE]: (level: Level) => MaybePromise<unknown>;
+  /** Best-effort **synchronous** rendering for the non-intercepted path (JSON / `console.log`). */
+  toJSON(): unknown;
+}
+
+/** True for a thenable (a `Promise` or any `{ then(): … }`). */
+export const isThenable = (v: unknown): v is PromiseLike<unknown> => v !== null && typeof v === 'object' && typeof (v as { then?: unknown }).then === 'function';
+
+/** True for a {@link logMaybe} marker. */
+export const isLazy = (v: unknown): v is LazyLogValue => v !== null && typeof v === 'object' && LOG_MAYBE in v;
+
+/**
+ * Defer an expensive log argument. The function runs **only if** the line will actually be
+ * logged (its level passes the threshold): under console interception the structured pipeline
+ * calls it (with the record's level) and awaits the result, treating it as a normal argument.
+ * On the non-intercepted path `toJSON` (and Node's inspect) render the synchronous value, or
+ * `'(unresolved value)'` when the function returns a promise that can't be awaited there.
+ *
+ * ```ts
+ * log.debug('state', logMaybe(() => expensiveSnapshot())) // snapshot built only at debug level
+ * ```
+ */
+export function logMaybe(fn: (level: Level) => MaybePromise<unknown>): LazyLogValue {
+  const render = (): unknown => {
+    let v: unknown;
+    try {
+      v = fn('info'); // the sync path has no record level — assume the common 'info'
+    } catch {
+      return UNRESOLVED;
+    }
+    return isThenable(v) ? UNRESOLVED : v;
+  };
+  const value = { [LOG_MAYBE]: fn, toJSON: render, [INSPECT]: render }; // also custom-inspect for non-intercepted console
+  return value;
+}
+
+/* ---- record sanitization (redaction / truncation) ---- */
+
+/** Options for {@link createSanitizer} (and `LoggerConfig.sanitize`). */
+export interface SanitizeOptions {
+  /** Decide whether a built record is logged at all — return `false` to drop it. Runs first. */
+  readonly filter?: (record: LogRecord) => boolean;
+  /** Property names whose values are masked — a `string` (case-insensitive exact match) or a `RegExp`. Matched at any depth. */
+  readonly sensitiveKeys?: readonly (string | RegExp)[];
+  /** String **values** are masked when they match — a `string` (case-insensitive substring) or a `RegExp`. */
+  readonly sensitiveValues?: readonly (string | RegExp)[];
+  /** Turn a sensitive value into its masked form (default `() => '[redacted]'`; see {@link partialMask}). */
+  readonly mask?: (value: unknown, key?: string) => unknown;
+  /** Truncate any string longer than this many characters, appending `'... (+N more)'`. */
+  readonly maxStringLength?: number;
+  /** Truncate a **homogeneous** array (all elements the same kind) beyond this many, appending a `'(+N more)'` element. */
+  readonly maxArrayLength?: number;
+}
+
+const DEFAULT_MASK = (): string => '[redacted]';
+
+/**
+ * A {@link SanitizeOptions.mask} that keeps the first `keep` characters and replaces the rest
+ * with `fill` (e.g. `partialMask(3)('secret-token') === 'sec***'`). Values no longer than
+ * `keep` are fully masked, so nothing short leaks. With the default `keep` of 0 it masks fully.
+ */
+export function partialMask(keep = 0, fill = '***'): (value: unknown) => string {
+  return (value) => {
+    const s = typeof value === 'string' ? value : safeString(value);
+    return s.length <= keep ? fill : s.slice(0, keep) + fill;
+  };
+}
+
+const matchKey = (key: string, patterns: readonly (string | RegExp)[]): boolean =>
+  patterns.some((p) => (typeof p === 'string' ? p.toLowerCase() === key.toLowerCase() : p.test(key)));
+const matchValue = (val: string, patterns: readonly (string | RegExp)[]): boolean =>
+  patterns.some((p) => (typeof p === 'string' ? val.toLowerCase().includes(p.toLowerCase()) : p.test(val)));
+
+const kindOf = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
+const isHomogeneous = (arr: readonly unknown[]): boolean => {
+  const k = kindOf(arr[0]);
+  return arr.every((e) => kindOf(e) === k);
+};
+const isPlainObject = (v: object): boolean => {
+  const proto = Object.getPrototypeOf(v) as object | null;
+  return proto === Object.prototype || proto === null;
+};
+const truncateString = (s: string, max: number): string => `${s.slice(0, max)}... (+${s.length - max} more)`;
+
+/**
+ * Build a record transformer that redacts sensitive keys/values and truncates long
+ * strings/arrays per {@link SanitizeOptions}. Returns the (new) record, or `null` to drop it
+ * (the `filter` returned `false`) — the same shape as `LoggerConfig.filter`, so it composes
+ * there too. Only plain objects and arrays are walked; `Date`/class instances/{@link logMaybe}
+ * markers pass through untouched, and the reserved `tms`/`level` fields are left pristine.
+ */
+export function createSanitizer(opts: SanitizeOptions): (record: LogRecord) => LogRecord | null {
+  const mask = opts.mask ?? DEFAULT_MASK;
+  const keys = opts.sensitiveKeys ?? [];
+  const values = opts.sensitiveValues ?? [];
+  const maxStr = opts.maxStringLength;
+  const maxArr = opts.maxArrayLength;
+
+  const visit = (value: unknown, key: string | undefined, seen: WeakSet<object>): unknown => {
+    if (key !== undefined && keys.length > 0 && matchKey(key, keys)) {return mask(value, key);}
+    if (typeof value === 'string') {
+      if (values.length > 0 && matchValue(value, values)) {return mask(value, key);}
+      if (maxStr !== undefined && value.length > maxStr) {return truncateString(value, maxStr);}
+      return value;
+    }
+    if (value === null || typeof value !== 'object' || isLazy(value)) {return value;}
+    if (seen.has(value)) {return value;} // cycle / shared ref — leave it for the formatter
+    if (Array.isArray(value)) {
+      seen.add(value);
+      let kept = value;
+      let extra = 0;
+      if (maxArr !== undefined && value.length > maxArr && isHomogeneous(value)) {
+        extra = value.length - maxArr;
+        kept = value.slice(0, maxArr);
+      }
+      const out = kept.map((e) => visit(e, undefined, seen));
+      if (extra > 0) {out.push(`(+${extra} more)`);}
+      return out;
+    }
+    if (!isPlainObject(value)) {return value;} // Date, class instances, … pass through untouched
+    seen.add(value);
+    const src = value as Record<string, unknown>;
+    const masked: Record<string, unknown> = {};
+    for (const k of Object.keys(src)) {masked[k] = visit(src[k], k, seen);}
+    return masked;
+  };
+
+  return (record) => {
+    if (opts.filter && !opts.filter(record)) {return null;}
+    const seen = new WeakSet<object>();
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(record)) {
+      out[k] = k === 'tms' || k === 'level' ? record[k] : visit(record[k], k, seen); // keep reserved structural fields pristine
+    }
+    return out as LogRecord;
+  };
 }
