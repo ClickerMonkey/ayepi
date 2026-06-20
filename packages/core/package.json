@@ -1,0 +1,77 @@
+{
+  "name": "@ayepi/core",
+  "version": "0.0.0",
+  "description": "zod-first, painfully-typed HTTP + WebSocket API library with OpenAPI 3.1 + AsyncAPI 3.0 generation",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./client": {
+      "import": {
+        "types": "./dist/client/index.d.ts",
+        "default": "./dist/client/index.js"
+      },
+      "require": {
+        "types": "./dist/client/index.d.cts",
+        "default": "./dist/client/index.cjs"
+      }
+    },
+    "./doer": {
+      "import": {
+        "types": "./dist/doer.d.ts",
+        "default": "./dist/doer.js"
+      },
+      "require": {
+        "types": "./dist/doer.d.cts",
+        "default": "./dist/doer.cjs"
+      }
+    },
+    "./retry": {
+      "import": {
+        "types": "./dist/retry.d.ts",
+        "default": "./dist/retry.js"
+      },
+      "require": {
+        "types": "./dist/retry.d.cts",
+        "default": "./dist/retry.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx example.ts --run",
+    "test": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "attw": "attw --pack .",
+    "publint": "publint"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.17.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "esbuild": "^0.28.0",
+    "publint": "^0.3.0",
+    "tsdown": "^0.12.0",
+    "vitest": "^2.1.8"
+  },
+  "keywords": ["api", "zod", "openapi", "asyncapi", "websocket", "typescript", "rpc", "fetch"]
+}

@@ -1,0 +1,10 @@
+packages:
+  - 'packages/*'
+  - 'examples'
+allowBuilds:
+  cpu-features: false
+  esbuild: true
+  protobufjs: false
+  ssh2: false
+onlyBuiltDependencies:
+  - esbuild

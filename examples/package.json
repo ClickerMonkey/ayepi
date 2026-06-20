@@ -1,0 +1,42 @@
+{
+  "name": "@ayepi/examples",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runnable example apps for ayepi — each is 3 files (shared spec, Node server, single-file Vue client), ramping from a hello world up to one that uses everything.",
+  "scripts": {
+    "hello": "tsx 01-hello/server.ts",
+    "notes": "tsx 02-notes/server.ts",
+    "chat": "tsx 03-chat/server.ts",
+    "kitchen-sink": "tsx 04-kitchen-sink/server.ts",
+    "jobs": "tsx 05-jobs/server.ts",
+    "mcp": "tsx 06-mcp/server.ts",
+    "everything": "tsx 07-everything/server.ts",
+    "plugins": "tsx 08-plugins/server.ts",
+    "cache": "tsx 09-cache/server.ts",
+    "files": "tsx 10-files/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ayepi/core": "workspace:*",
+    "@ayepi/node": "workspace:*",
+    "@ayepi/files": "workspace:*",
+    "@ayepi/auth": "workspace:*",
+    "@ayepi/otel": "workspace:*",
+    "@ayepi/log": "workspace:*",
+    "@ayepi/rate": "workspace:*",
+    "@ayepi/work": "workspace:*",
+    "@ayepi/updown": "workspace:*",
+    "@ayepi/mcp": "workspace:*",
+    "@ayepi/codec": "workspace:*",
+    "@ayepi/plugin": "workspace:*",
+    "@ayepi/cache": "workspace:*",
+    "vue": "^3.5.13",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.2"
+  }
+}

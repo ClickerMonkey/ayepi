@@ -1,0 +1,43 @@
+{
+  "name": "@ayepi/otel",
+  "version": "0.0.0",
+  "description": "Observability middleware for @ayepi/core — request/response logging, trace-context enrichment, configurable fields, and per-endpoint overrides",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    },
+    "./server": {
+      "import": { "types": "./dist/server.d.ts", "default": "./dist/server.js" },
+      "require": { "types": "./dist/server.d.cts", "default": "./dist/server.cjs" }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "publint": "publint"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@ayepi/core": "workspace:^",
+    "@ayepi/log": "workspace:^"
+  },
+  "devDependencies": {
+    "@ayepi/core": "workspace:*",
+    "@ayepi/log": "workspace:*",
+    "@vitest/coverage-v8": "^2.1.8",
+    "publint": "^0.3.0",
+    "tsdown": "^0.12.0",
+    "vitest": "^2.1.8",
+    "zod": "^4.4.3"
+  },
+  "keywords": ["ayepi", "observability", "logging", "telemetry", "tracing", "middleware"]
+}

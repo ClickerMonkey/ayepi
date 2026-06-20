@@ -1,0 +1,2875 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`document snapshots > asyncapi is stable 1`] = `
+{
+  "asyncapi": "3.0.0",
+  "channels": {
+    "/createThing": {
+      "address": "/createThing",
+      "description": "frame: { id, type: "/createThing", method: "POST", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "name": {
+                    "type": "string",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "POST",
+              },
+              "type": {
+                "const": "/createThing",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/createThing/reply": {
+      "address": "/createThing",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/echoText": {
+      "address": "/echoText",
+      "description": "frame: { id, type: "/echoText", method: "POST", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "string",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "POST",
+              },
+              "type": {
+                "const": "/echoText",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/echoText/reply": {
+      "address": "/echoText",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "len": {
+                    "type": "number",
+                  },
+                },
+                "required": [
+                  "len",
+                ],
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/enrichEvents": {
+      "address": "/enrichEvents",
+      "description": "frame: { id, type: "/enrichEvents", method: "POST", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "factor": {
+                    "type": "number",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "POST",
+              },
+              "type": {
+                "const": "/enrichEvents",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/enrichEvents/reply": {
+      "address": "/enrichEvents",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/getUser/:id": {
+      "address": "/getUser/:id",
+      "description": "frame: { id, type: "/getUser/:id", method: "POST", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "id": {
+                    "type": "string",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "POST",
+              },
+              "type": {
+                "const": "/getUser/:id",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/getUser/:id/reply": {
+      "address": "/getUser/:id",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                  },
+                  "name": {
+                    "type": "string",
+                  },
+                  "role": {
+                    "enum": [
+                      "admin",
+                      "member",
+                    ],
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "role",
+                ],
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/health": {
+      "address": "/health",
+      "description": "frame: { id, type: "/health", method: "POST", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {},
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "POST",
+              },
+              "type": {
+                "const": "/health",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/health/reply": {
+      "address": "/health",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/login": {
+      "address": "/login",
+      "description": "frame: { id, type: "/login", method: "POST", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "user": {
+                    "type": "string",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "POST",
+              },
+              "type": {
+                "const": "/login",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/login/reply": {
+      "address": "/login",
+      "messages": {
+        "error": {
+          "description": "error frame — declared statuses: 403",
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "ok": {
+                    "type": "boolean",
+                  },
+                },
+                "required": [
+                  "ok",
+                ],
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/orgs/:orgSlug/info": {
+      "address": "/orgs/:orgSlug/info",
+      "description": "frame: { id, type: "/orgs/:orgSlug/info", method: "GET", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "orgSlug": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "string",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "GET",
+              },
+              "type": {
+                "const": "/orgs/:orgSlug/info",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/orgs/:orgSlug/info/reply": {
+      "address": "/orgs/:orgSlug/info",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "owner": {
+                    "type": "string",
+                  },
+                  "slug": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "slug",
+                  "owner",
+                ],
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/projects/:projectId/tasks": {
+      "address": "/projects/:projectId/tasks",
+      "description": "frame: { id, type: "/projects/:projectId/tasks", method: "GET", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "done": {
+                    "type": "boolean",
+                  },
+                  "projectId": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                    "type": "string",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "GET",
+              },
+              "type": {
+                "const": "/projects/:projectId/tasks",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/projects/:projectId/tasks/reply": {
+      "address": "/projects/:projectId/tasks",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "items": {
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                    },
+                    "title": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                  ],
+                  "type": "object",
+                },
+                "type": "array",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/reports/:year/:slug": {
+      "address": "/reports/:year/:slug",
+      "description": "frame: { id, type: "/reports/:year/:slug", method: "GET", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "slug": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "string",
+                  },
+                  "year": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "GET",
+              },
+              "type": {
+                "const": "/reports/:year/:slug",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/reports/:year/:slug/reply": {
+      "address": "/reports/:year/:slug",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                  },
+                  "year": {
+                    "type": "number",
+                  },
+                },
+                "required": [
+                  "year",
+                  "slug",
+                ],
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/searchDocs": {
+      "address": "/searchDocs",
+      "description": "frame: { id, type: "/searchDocs", method: "POST", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "filters": {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                  "limit": {
+                    "default": 10,
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer",
+                  },
+                  "q": {
+                    "type": "string",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "POST",
+              },
+              "type": {
+                "const": "/searchDocs",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/searchDocs/reply": {
+      "address": "/searchDocs",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "hits": {
+                    "type": "number",
+                  },
+                  "q": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "hits",
+                  "q",
+                ],
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/streamRows": {
+      "address": "/streamRows",
+      "description": "frame: { id, type: "/streamRows", method: "GET", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "n": {
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "GET",
+              },
+              "type": {
+                "const": "/streamRows",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/streamRows/reply": {
+      "address": "/streamRows",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/submitForm": {
+      "address": "/submitForm",
+      "description": "frame: { id, type: "/submitForm", method: "POST", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "count": {
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer",
+                  },
+                  "title": {
+                    "type": "string",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "POST",
+              },
+              "type": {
+                "const": "/submitForm",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/submitForm/reply": {
+      "address": "/submitForm",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "count": {
+                    "type": "number",
+                  },
+                  "title": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "title",
+                  "count",
+                ],
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/tickerSse": {
+      "address": "/tickerSse",
+      "description": "frame: { id, type: "/tickerSse", method: "GET", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "n": {
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "GET",
+              },
+              "type": {
+                "const": "/tickerSse",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/tickerSse/reply": {
+      "address": "/tickerSse",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/whoami": {
+      "address": "/whoami",
+      "description": "frame: { id, type: "/whoami", method: "POST", data }",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {},
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "method": {
+                "const": "POST",
+              },
+              "type": {
+                "const": "/whoami",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "/whoami/reply": {
+      "address": "/whoami",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "session": {
+                    "type": "string",
+                  },
+                  "version": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "version",
+                  "session",
+                ],
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "jobProgress": {
+      "address": "jobProgress",
+      "messages": {
+        "event": {
+          "payload": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "pct": {
+                "type": "number",
+              },
+            },
+            "required": [
+              "pct",
+            ],
+            "type": "object",
+          },
+        },
+      },
+      "parameters": {
+        "jobId": {},
+      },
+      "summary": "Per-job progress updates",
+    },
+    "roomMessage": {
+      "address": "roomMessage",
+      "messages": {
+        "event": {
+          "payload": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "from": {
+                "type": "string",
+              },
+              "text": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "from",
+              "text",
+            ],
+            "type": "object",
+          },
+        },
+      },
+      "parameters": {
+        "roomId": {},
+      },
+    },
+    "sys:notice": {
+      "address": "sys:notice",
+      "messages": {
+        "event": {
+          "payload": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+              "msg": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "msg",
+            ],
+            "type": "object",
+          },
+        },
+      },
+    },
+    "user:update": {
+      "address": "user:update",
+      "messages": {
+        "request": {
+          "payload": {
+            "properties": {
+              "data": {
+                "properties": {
+                  "age": {
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer",
+                  },
+                  "id": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "string",
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                },
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+              "type": {
+                "const": "user:update",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+    "user:update/reply": {
+      "address": "user:update",
+      "messages": {
+        "error": {
+          "payload": {
+            "properties": {
+              "$code": {
+                "description": "machine-readable error code (e.g. UNAUTHORIZED, VALIDATION)",
+                "type": "string",
+              },
+              "$error": {
+                "description": "human-readable error message",
+                "type": "string",
+              },
+              "$status": {
+                "description": "non-2xx — the client throws an ApiError",
+                "type": "integer",
+              },
+              "data": {
+                "description": "typed error body for declared errors",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "$status",
+            ],
+            "type": "object",
+          },
+        },
+        "reply": {
+          "payload": {
+            "properties": {
+              "$status": {
+                "description": "2xx on success",
+                "type": "integer",
+              },
+              "data": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                  },
+                  "name": {
+                    "type": "string",
+                  },
+                  "role": {
+                    "enum": [
+                      "admin",
+                      "member",
+                    ],
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "role",
+                ],
+                "type": "object",
+              },
+              "id": {
+                "type": "string",
+              },
+            },
+            "type": "object",
+          },
+        },
+      },
+    },
+  },
+  "defaultContentType": "application/json",
+  "info": {
+    "title": "Example",
+    "version": "1.0.0",
+  },
+  "operations": {
+    "call.createThing": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1createThing",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1createThing/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1createThing~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1createThing~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1createThing~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.echoText": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1echoText",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1echoText/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1echoText~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1echoText~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1echoText~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.enrichEvents": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1enrichEvents",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1enrichEvents/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1enrichEvents~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1enrichEvents~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1enrichEvents~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.getReport": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1reports~1:year~1:slug",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1reports~1:year~1:slug/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1reports~1:year~1:slug~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1reports~1:year~1:slug~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1reports~1:year~1:slug~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.getUser": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1getUser~1:id",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1getUser~1:id/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1getUser~1:id~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1getUser~1:id~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1getUser~1:id~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.health": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1health",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1health/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1health~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1health~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1health~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.listTasks": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1projects~1:projectId~1tasks",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1projects~1:projectId~1tasks/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1projects~1:projectId~1tasks~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1projects~1:projectId~1tasks~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1projects~1:projectId~1tasks~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.login": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1login",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1login/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1login~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1login~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1login~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.orgInfo": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1orgs~1:orgSlug~1info",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1orgs~1:orgSlug~1info/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1orgs~1:orgSlug~1info~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1orgs~1:orgSlug~1info~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1orgs~1:orgSlug~1info~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.searchDocs": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1searchDocs",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1searchDocs/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1searchDocs~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1searchDocs~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1searchDocs~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.streamRows": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1streamRows",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1streamRows/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1streamRows~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1streamRows~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1streamRows~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.submitForm": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1submitForm",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1submitForm/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1submitForm~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1submitForm~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1submitForm~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.tickerSse": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1tickerSse",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1tickerSse/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1tickerSse~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1tickerSse~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1tickerSse~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.updateUser": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/user:update",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/user:update/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/user:update~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/user:update~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/user:update~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "call.whoami": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/~1whoami",
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/~1whoami/messages/request",
+        },
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/~1whoami~1reply",
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/~1whoami~1reply/messages/reply",
+          },
+          {
+            "$ref": "#/channels/~1whoami~1reply/messages/error",
+          },
+        ],
+      },
+    },
+    "receive.jobProgress": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/jobProgress",
+      },
+    },
+    "receive.roomMessage": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/roomMessage",
+      },
+    },
+    "receive.systemNotice": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/sys:notice",
+      },
+    },
+  },
+}
+`;
+
+exports[`document snapshots > openapi is stable 1`] = `
+{
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "scheme": "bearer",
+        "type": "http",
+      },
+    },
+  },
+  "info": {
+    "title": "Example",
+    "version": "1.0.0",
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/createThing": {
+      "post": {
+        "operationId": "createThing",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "name",
+                ],
+                "type": "object",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "existing": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "existing",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "status 200",
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "id",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "status 201",
+          },
+        },
+        "summary": "Create a thing (or find existing)",
+        "tags": [
+          "things",
+        ],
+      },
+    },
+    "/downloadLog": {
+      "get": {
+        "operationId": "downloadLog",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string",
+                },
+              },
+            },
+            "description": "stream",
+          },
+        },
+      },
+    },
+    "/downloadZip": {
+      "get": {
+        "operationId": "downloadZip",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string",
+                },
+              },
+            },
+            "description": "stream",
+          },
+        },
+      },
+    },
+    "/echoText": {
+      "post": {
+        "operationId": "echoText",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "string",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "len": {
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "len",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+      },
+    },
+    "/enrichEvents": {
+      "post": {
+        "operationId": "enrichEvents",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "factor",
+            "required": false,
+            "schema": {
+              "type": "number",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-ndjson": {
+              "schema": {
+                "items": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "id": {
+                      "type": "number",
+                    },
+                    "v": {
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "v",
+                  ],
+                  "type": "object",
+                },
+                "type": "array",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "items": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "properties": {
+                      "id": {
+                        "type": "number",
+                      },
+                      "scaled": {
+                        "type": "number",
+                      },
+                    },
+                    "required": [
+                      "id",
+                      "scaled",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+              },
+            },
+            "description": "NDJSON item stream",
+          },
+        },
+      },
+    },
+    "/exportCsv": {
+      "get": {
+        "operationId": "exportCsv",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "rows",
+            "required": false,
+            "schema": {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string",
+                },
+              },
+            },
+            "description": "stream",
+          },
+        },
+      },
+    },
+    "/getUser/{id}": {
+      "post": {
+        "operationId": "getUser",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                    },
+                    "name": {
+                      "type": "string",
+                    },
+                    "role": {
+                      "enum": [
+                        "admin",
+                        "member",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "role",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+      },
+    },
+    "/health": {
+      "post": {
+        "operationId": "health",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": "no content",
+          },
+        },
+      },
+    },
+    "/ingestData": {
+      "post": {
+        "operationId": "ingestData",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "bytes": {
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "bytes",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+      },
+    },
+    "/login": {
+      "post": {
+        "operationId": "login",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "user": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "user",
+                ],
+                "type": "object",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                    },
+                  },
+                  "required": [
+                    "ok",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "reason": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "reason",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "declared error 403",
+          },
+        },
+        "summary": "Start a session",
+        "tags": [
+          "auth",
+        ],
+      },
+    },
+    "/orgs/{orgSlug}/info": {
+      "get": {
+        "operationId": "orgInfo",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgSlug",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "owner": {
+                      "type": "string",
+                    },
+                    "slug": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "slug",
+                    "owner",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+      },
+    },
+    "/projects/{projectId}/tasks": {
+      "get": {
+        "operationId": "listTasks",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectId",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+              "type": "string",
+            },
+          },
+          {
+            "in": "query",
+            "name": "done",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "items": {
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                      },
+                      "title": {
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+      },
+    },
+    "/reports/{year}/{slug}": {
+      "get": {
+        "operationId": "getReport",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "year",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer",
+            },
+          },
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "slug": {
+                      "type": "string",
+                    },
+                    "year": {
+                      "type": "number",
+                    },
+                  },
+                  "required": [
+                    "year",
+                    "slug",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+      },
+    },
+    "/rotateKeys": {
+      "post": {
+        "operationId": "rotateKeys",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "rotated": {
+                      "type": "boolean",
+                    },
+                  },
+                  "required": [
+                    "rotated",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+      },
+    },
+    "/searchDocs": {
+      "post": {
+        "operationId": "searchDocs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string",
+            },
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "filters": {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "filters",
+                ],
+                "type": "object",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "hits": {
+                      "type": "number",
+                    },
+                    "q": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "hits",
+                    "q",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+      },
+    },
+    "/streamRows": {
+      "get": {
+        "operationId": "streamRows",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "n",
+            "required": false,
+            "schema": {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "items": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "properties": {
+                      "i": {
+                        "type": "number",
+                      },
+                      "squared": {
+                        "type": "number",
+                      },
+                    },
+                    "required": [
+                      "i",
+                      "squared",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+              },
+            },
+            "description": "NDJSON item stream",
+          },
+        },
+      },
+    },
+    "/submitForm": {
+      "post": {
+        "operationId": "submitForm",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "count": {
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer",
+                  },
+                  "title": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "title",
+                  "count",
+                ],
+                "type": "object",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "count": {
+                      "type": "number",
+                    },
+                    "title": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "title",
+                    "count",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+      },
+    },
+    "/tickerSse": {
+      "get": {
+        "operationId": "tickerSse",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "n",
+            "required": false,
+            "schema": {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "items": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "properties": {
+                      "tick": {
+                        "type": "number",
+                      },
+                    },
+                    "required": [
+                      "tick",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+              },
+            },
+            "description": "NDJSON item stream",
+          },
+        },
+      },
+    },
+    "/uploadDoc": {
+      "post": {
+        "operationId": "uploadDoc",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "body": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "properties": {
+                      "title": {
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "title",
+                    ],
+                    "type": "object",
+                  },
+                  "doc": {
+                    "format": "binary",
+                    "type": "string",
+                  },
+                },
+                "type": "object",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "size": {
+                      "type": "number",
+                    },
+                    "title": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "size",
+                    "title",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+      },
+    },
+    "/users/{id}": {
+      "patch": {
+        "operationId": "updateUser",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "age": {
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer",
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "name",
+                ],
+                "type": "object",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                    },
+                    "name": {
+                      "type": "string",
+                    },
+                    "role": {
+                      "enum": [
+                        "admin",
+                        "member",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "role",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Update a user",
+        "tags": [
+          "users",
+        ],
+      },
+    },
+    "/whoami": {
+      "post": {
+        "description": "Echoes session + client version",
+        "operationId": "whoami",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-client-version",
+            "required": true,
+            "schema": {
+              "type": "string",
+            },
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "properties": {
+                    "session": {
+                      "type": "string",
+                    },
+                    "version": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "version",
+                    "session",
+                  ],
+                  "type": "object",
+                },
+              },
+            },
+            "description": "ok",
+          },
+        },
+        "summary": "Who am I",
+        "tags": [
+          "auth",
+        ],
+      },
+    },
+  },
+  "servers": [
+    {
+      "url": "https://api.example.dev",
+    },
+  ],
+}
+`;

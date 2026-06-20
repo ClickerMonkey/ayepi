@@ -1,0 +1,45 @@
+{
+  "name": "@ayepi/files",
+  "version": "0.0.0",
+  "description": "Generic S3-like key-based file storage for @ayepi/core — stream-first put/get, prefix listing, presigned upload/download URLs, with a filesystem default and stream/transfer helpers",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    },
+    "./fs": {
+      "import": { "types": "./dist/fs.d.ts", "default": "./dist/fs.js" },
+      "require": { "types": "./dist/fs.d.cts", "default": "./dist/fs.cjs" }
+    },
+    "./server": {
+      "import": { "types": "./dist/server.d.ts", "default": "./dist/server.js" },
+      "require": { "types": "./dist/server.d.cts", "default": "./dist/server.cjs" }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "publint": "publint"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@ayepi/core": "workspace:^"
+  },
+  "devDependencies": {
+    "@ayepi/core": "workspace:*",
+    "@vitest/coverage-v8": "^2.1.8",
+    "publint": "^0.3.0",
+    "tsdown": "^0.12.0",
+    "vitest": "^2.1.8",
+    "zod": "^4.4.3"
+  },
+  "keywords": ["ayepi", "@ayepi/core", "files", "storage", "s3", "filesystem", "presigned-url", "streams"]
+}

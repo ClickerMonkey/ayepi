@@ -1,0 +1,55 @@
+{
+  "name": "@ayepi/redis",
+  "version": "0.0.0",
+  "description": "Redis backends for ayepi (ioredis) — pub/sub Broker, @ayepi/work Store + PubSub, and an @ayepi/cache store, all retry-wrapped",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "publint": "publint"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@ayepi/core": "workspace:^",
+    "@ayepi/work": "workspace:^",
+    "@ayepi/cache": "workspace:^",
+    "ioredis": "^5"
+  },
+  "peerDependenciesMeta": {
+    "@ayepi/work": { "optional": true },
+    "@ayepi/cache": { "optional": true }
+  },
+  "devDependencies": {
+    "@ayepi/core": "workspace:*",
+    "@ayepi/work": "workspace:*",
+    "@ayepi/cache": "workspace:*",
+    "@vitest/coverage-v8": "^2.1.8",
+    "ioredis": "^5.4.1",
+    "publint": "^0.3.0",
+    "testcontainers": "^10.13.0",
+    "tsdown": "^0.12.0",
+    "vitest": "^2.1.8",
+    "zod": "^4.4.3"
+  },
+  "keywords": ["ayepi", "@ayepi/core", "redis", "ioredis", "broker", "pubsub", "websocket"]
+}

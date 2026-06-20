@@ -1,0 +1,49 @@
+{
+  "name": "@ayepi/node",
+  "version": "0.0.0",
+  "description": "Node.js (node:http + ws) adapter for @ayepi/core — bridges IncomingMessage ⇄ fetch Request/Response and serves WebSocket upgrades",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "attw": "attw --pack .",
+    "publint": "publint"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@ayepi/core": "workspace:^"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.17.0",
+    "@types/ws": "^8.5.13",
+    "@vitest/coverage-v8": "^2.1.8",
+    "@ayepi/core": "workspace:*",
+    "publint": "^0.3.0",
+    "tsdown": "^0.12.0",
+    "vitest": "^2.1.8",
+    "zod": "^4.4.3"
+  },
+  "keywords": ["ayepi", "@ayepi/core", "node", "http", "websocket", "ws", "adapter", "server"]
+}

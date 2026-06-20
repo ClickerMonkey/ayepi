@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (incl. example.ts type-regression suite)
+        run: pnpm -r typecheck
+
+      - name: Lint (eslint + cast gate)
+        run: pnpm lint
+
+      - name: Build (dual ESM/CJS + d.ts)
+        run: pnpm -r build
+
+      - name: Unit + integration tests (incl. zod-free client bundle check)
+        run: pnpm -r test
+
+      - name: Work multi-pod integration (in-memory, no Docker)
+        run: pnpm --filter @ayepi/work test:integration
+
+      - name: Smoke suite (the executable specification)
+        run: pnpm smoke
+
+      - name: publint
+        run: pnpm -r publint
+
+      - name: Are The Types Wrong?
+        run: pnpm -r attw
+        continue-on-error: true # attw can crash on some runners; publint is the blocking packaging gate
+
+  # Real-runtime smokes for the native-WebSocket adapters. The adapter glue is
+  # already unit-tested under Node (mocked globals) in the job above; these run the
+  # actual serve() on a real port under Bun/Deno. continue-on-error until verified.
+  bun:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ayepi/core build
+      - run: bun packages/bun/e2e.ts
+
+  deno:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ayepi/core build
+      - run: deno run -A --node-modules-dir packages/deno/e2e.ts
+
+  # Real-Redis integration (testcontainers spins Redis via the runner's Docker): the broker
+  # plus the @ayepi/redis work Store / PubSub and cache backends, and @ayepi/rate's store.
+  redis-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ayepi/core build
+      - run: pnpm --filter @ayepi/work build
+      - run: pnpm --filter @ayepi/cache build
+      - run: pnpm --filter @ayepi/redis test:integration
+      - run: pnpm --filter @ayepi/rate test:integration
+
+  # Real S3 + SQS integration for @ayepi/aws (testcontainers spins LocalStack via Docker).
+  localstack-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ayepi/core build
+      - run: pnpm --filter @ayepi/work build
+      - run: pnpm --filter @ayepi/files build
+      - run: pnpm --filter @ayepi/aws test:integration
