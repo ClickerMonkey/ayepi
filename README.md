@@ -26,6 +26,10 @@ const user = await sdk.call('getUser', { id: 'u1' })    // fully typed, one data
 - **no `any`** — the public generic surface infers precisely; no `any`/`unknown`/
   uncommented casts anywhere a consumer's editor can see.
 
+> **Working with an LLM/coding agent?** Start with [`ayepi.md`](ayepi.md) — an index that
+> explains the mental model and routes to the right per-package `ayepi-<pkg>.md` reference for
+> whatever you're building.
+
 ## Packages
 
 | Package | What it is | Extra dep |
