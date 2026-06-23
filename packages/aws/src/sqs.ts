@@ -23,6 +23,10 @@ import { makeRun, type ResilientOptions } from './index';
 
 /** SQS allows at most 10 messages per `ReceiveMessage`. */
 const MAX_RECEIVE = 10;
+/** SQS rejects `DelaySeconds` outside 0–900 (15 min). */
+const MAX_DELAY_SECONDS = 900;
+/** SQS rejects a visibility timeout outside 0–43200 (12 h). */
+const MAX_VISIBILITY_SECONDS = 43_200;
 /** Default large-payload threshold (bytes) — comfortably under SQS's 256 KB message limit. */
 const DEFAULT_THRESHOLD = 240 * 1024;
 /** The marker key identifying an S3-offloaded message body. */
@@ -59,6 +63,10 @@ export interface SqsQueueOptions extends ResilientOptions {
 }
 
 const secs = (ms: number): number => Math.ceil(ms / MS_PER_SECOND);
+/** Clamp a delay (ms) to SQS's `DelaySeconds` range so a far-future schedule doesn't error (the engine re-defers). */
+const delaySecs = (ms: number): number => Math.min(MAX_DELAY_SECONDS, Math.max(0, secs(ms)));
+/** Clamp a visibility/backoff (ms) to SQS's max so a long `fail`/`heartbeat` doesn't error (the engine re-defers). */
+const visSecs = (ms: number): number => Math.min(MAX_VISIBILITY_SECONDS, Math.max(0, secs(ms)));
 
 /** If `body` is an S3 pointer, return the key; else `undefined`. */
 function pointerKey(body: string): string | undefined {
@@ -108,7 +116,7 @@ export function sqsQueue(opts: SqsQueueOptions): Queue {
           await large.store.put(key, body, { contentType: 'application/json' });
           messageBody = JSON.stringify({ [S3_MARKER]: key });
         }
-        await client.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: messageBody, DelaySeconds: o?.delay !== undefined ? secs(o.delay) : undefined }));
+        await client.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: messageBody, DelaySeconds: o?.delay !== undefined ? delaySecs(o.delay) : undefined }));
       }),
 
     pop: (max, visibility) =>
@@ -117,7 +125,7 @@ export function sqsQueue(opts: SqsQueueOptions): Queue {
           new ReceiveMessageCommand({
             QueueUrl: queueUrl,
             MaxNumberOfMessages: Math.min(max, MAX_RECEIVE),
-            VisibilityTimeout: secs(visibility),
+            VisibilityTimeout: visSecs(visibility),
             WaitTimeSeconds: waitTimeSeconds,
             MessageSystemAttributeNames: ['ApproximateReceiveCount'],
           }),
@@ -137,7 +145,7 @@ export function sqsQueue(opts: SqsQueueOptions): Queue {
 
     heartbeat: (pulled, visibility) =>
       run(async () => {
-        await client.send(new ChangeMessageVisibilityCommand({ QueueUrl: queueUrl, ReceiptHandle: handleOf(pulled).receiptHandle, VisibilityTimeout: secs(visibility) }));
+        await client.send(new ChangeMessageVisibilityCommand({ QueueUrl: queueUrl, ReceiptHandle: handleOf(pulled).receiptHandle, VisibilityTimeout: visSecs(visibility) }));
       }),
 
     ack: (pulled) =>
@@ -149,7 +157,7 @@ export function sqsQueue(opts: SqsQueueOptions): Queue {
 
     fail: (pulled, delay) =>
       run(async () => {
-        await client.send(new ChangeMessageVisibilityCommand({ QueueUrl: queueUrl, ReceiptHandle: handleOf(pulled).receiptHandle, VisibilityTimeout: secs(delay ?? 0) }));
+        await client.send(new ChangeMessageVisibilityCommand({ QueueUrl: queueUrl, ReceiptHandle: handleOf(pulled).receiptHandle, VisibilityTimeout: visSecs(delay ?? 0) }));
       }),
   };
 }

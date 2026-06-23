@@ -214,6 +214,40 @@ Notes & constraints:
 - **Bounded scan.** `nextAfter` scans at most ~1 year (`366 * 24 * 60` minutes) forward;
   a never-matching expression returns `undefined`.
 
+### One-off scheduling — `runAt` & handler-thrown `WorkDelayError`
+
+`w.schedule` is for **recurring** work. For a **one-off** future run, enqueue with an absolute
+time instead — `enqueue(work, { runAt })` (epoch ms). `runAt` is an alternative to `delay` and
+wins over it.
+
+```ts
+// run once, far in the future
+w.enqueue(report({ day }), { runAt: Date.parse('2030-01-01T03:00:00Z') })
+```
+
+A running handler can also **defer its own item** to a later time by throwing `WorkDelayError`
+— a **reschedule, not a retry**, so the `attempt` count is unchanged and a handler can defer
+indefinitely (poll-style "not ready yet, try me later"):
+
+```ts
+import { WorkDelayError } from '@ayepi/work'
+
+const poll = defineWork('poll', async (input) => {
+  if (!(await upstreamReady())) throw new WorkDelayError({ delay: 5 * 60_000 }) // re-run in 5 min, same attempt
+  return doWork(input)
+})
+```
+
+`WorkDelayError`'s `when` takes `{ runAt }` (absolute, wins) or `{ delay }` (relative ms).
+The deferral re-enqueues the item at the resolved time and emits a `deferred` event. See
+[`ayepi-work.md` → Deferral & scheduling](./ayepi-work.md#deferral--scheduling) for details.
+
+**Far-future works on any backend.** Both `runAt` and a `WorkDelayError` deferral resolve to a
+`startAt`. A backend that can't honor a long single delay (e.g. SQS caps `DelaySeconds` at
+15 min) hands the item back early; the engine re-checks `startAt` on pop and **re-defers**
+until it's actually due, so an item scheduled arbitrarily far out still fires at the right time
+(see [`ayepi-work-ports.md` → Early-arrival re-defer](./ayepi-work-ports.md#early-arrival-re-defer-far-future-scheduling)).
+
 ### How scheduling works under the hood
 
 A ~1 s tick (`SCHED_TICK = 1000`) checks whether the next fire time has arrived. When it

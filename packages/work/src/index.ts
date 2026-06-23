@@ -35,6 +35,9 @@ import type { WorkState } from './types';
 /* ---- core ---- */
 export { createWork } from './engine';
 export { defineWork, defineBatchWork } from './types';
+export { WorkDelayError } from './errors';
+export type { WorkDelaySpec } from './errors';
+export { RetryAbort } from '@ayepi/core/retry';
 export type {
   WorkSystem,
   WorkSystemOptions,

@@ -161,11 +161,24 @@ The returned [`Queue`](./ayepi-work-ports.md#queue--the-durable-work-log) maps o
 
 | `Queue` method | SQS call | Mapping |
 |---|---|---|
-| `push(body, { delay? })` | `SendMessage` | `MessageBody` = body (or pointer); `DelaySeconds` = `ceil(delay/1000)` |
-| `pop(max, visibility)` | `ReceiveMessage` | `MaxNumberOfMessages` = `min(max, 10)`; `VisibilityTimeout` = `ceil(visibility/1000)`; `WaitTimeSeconds` = `waitTimeSeconds`; reads `ApproximateReceiveCount` |
-| `heartbeat(pulled, visibility)` | `ChangeMessageVisibility` | extends the lease to `ceil(visibility/1000)` s |
+| `push(body, { delay? })` | `SendMessage` | `MessageBody` = body (or pointer); `DelaySeconds` = `ceil(delay/1000)`, **clamped to ≤ 900 s** |
+| `pop(max, visibility)` | `ReceiveMessage` | `MaxNumberOfMessages` = `min(max, 10)`; `VisibilityTimeout` = `ceil(visibility/1000)`, **clamped to ≤ 43200 s**; `WaitTimeSeconds` = `waitTimeSeconds`; reads `ApproximateReceiveCount` |
+| `heartbeat(pulled, visibility)` | `ChangeMessageVisibility` | extends the lease to `ceil(visibility/1000)` s, **clamped to ≤ 43200 s** |
 | `ack(pulled)` | `DeleteMessage` | permanently removes the message (+ deletes the offloaded S3 body) |
-| `fail(pulled, delay?)` | `ChangeMessageVisibility` | returns the message early: `VisibilityTimeout` = `ceil((delay ?? 0)/1000)` s |
+| `fail(pulled, delay?)` | `ChangeMessageVisibility` | returns the message early: `VisibilityTimeout` = `ceil((delay ?? 0)/1000)` s, **clamped to ≤ 43200 s** |
+
+**SQS range clamping (far-future scheduling).** SQS rejects out-of-range values, so the queue
+clamps each duration into SQS's allowed range: `DelaySeconds` to **0–900 s** (15 min) on `push`,
+and `VisibilityTimeout` to **0–43200 s** (12 h) on `pop`/`heartbeat`/`fail`. This is what lets
+the `@ayepi/work` engine schedule items **arbitrarily far** in the future on SQS: a long `delay`
+or `startAt` is clamped to the cap rather than erroring, so a far-future item is delivered early,
+the engine sees it isn't due yet and **puts it back** (via `fail` with the remaining delay, again
+clamped), and it **bounces** — every ≤ 900 s after a `push` and every ≤ 12 h after a re-defer —
+until its scheduled time finally arrives. See the engine's
+[early-arrival re-defer](./ayepi-work-ports.md#early-arrival-re-defer-far-future-scheduling).
+The cost is **polling**: a far-future item is received and re-deferred on that cadence the whole
+time it waits (each bounce is a `ReceiveMessage` + `ChangeMessageVisibility`), so prefer modest
+horizons or keep distant schedules sparse.
 
 - **`pop`** returns at most **10** messages per call (SQS's `ReceiveMessage` cap), regardless of
   `max`. Each `PulledWork.attempt` comes from the message's `ApproximateReceiveCount` (delivery
@@ -386,6 +399,13 @@ The same `retry` / `onError` options apply to `sqsQueue`. On final failure `onEr
 - **`pop` returns ≤ 10 per call.** SQS caps `ReceiveMessage` at 10 messages regardless of the `max`
   you request. The engine polls in a loop, so this is fine — just don't expect one `pop` to drain
   a large backlog.
+- **Far-future schedules bounce (and cost polling).** SQS caps a single `DelaySeconds` at 15 min and
+  a visibility at 12 h, so the queue clamps both. A far-future `runAt` / `WorkDelayError` deferral is
+  therefore honored by **re-deferral**: the item is received early, the engine re-checks `startAt` and
+  puts it back, and it bounces every ≤ 900 s (after `push`) / ≤ 12 h (after a re-defer) until due. It
+  fires at the right time, but each bounce is a `ReceiveMessage` + `ChangeMessageVisibility` — so a
+  large number of distant-future items incurs ongoing polling. See
+  [ayepi-work-ports.md → early-arrival re-defer](./ayepi-work-ports.md#early-arrival-re-defer-far-future-scheduling).
 - **You own the SDK clients & their lifecycle.** `@ayepi/aws` never constructs or closes a client.
   Configure region/credentials/endpoint yourself and `destroy()` the clients on shutdown. The AWS
   SDK packages are optional peer deps — install the ones you use, or the import will fail.

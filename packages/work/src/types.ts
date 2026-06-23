@@ -15,9 +15,10 @@
 
 import { uuid, type Clock, type LogWith } from './internal';
 import type { JsonCodec } from './json';
-import type { Backend } from './ports';
+import type { Backend, Queue } from './ports';
 import type { Doer } from '@ayepi/core/doer';
 import type { RetryOptions } from '@ayepi/core/retry';
+import type { MaybePromise } from '@ayepi/core';
 
 /* ---- definition primitives ---- */
 
@@ -67,6 +68,13 @@ export type WorkHandler<I, O> = (input: I, ctx: WorkContext) => O | Promise<O>;
 export interface WorkInstanceOptions {
   /** Delay before the item becomes runnable (ms). Sets `startAt = queueAt + delay`. */
   readonly delay?: number;
+  /**
+   * Absolute time the item should become runnable (epoch ms) — an alternative to {@link delay}
+   * (`delay = runAt - now`, wins over `delay`). Works for arbitrarily-far times even on backends
+   * that cap a single delay (e.g. SQS's 15-min `DelaySeconds`): the engine re-defers early arrivals
+   * until `runAt`. See also the handler-thrown `WorkDelayError`.
+   */
+  readonly runAt?: number;
   /** Retry policy override for this item (`@ayepi/core`'s {@link RetryOptions}; callbacks apply to `skipQueue` work). */
   readonly retry?: RetryOptions;
   /** Scheduling priority (higher runs first) — consumed by the {@link Doer}. */
@@ -95,8 +103,15 @@ export interface WorkOptions<I> {
   readonly priority?: number;
   /** Default fairness group for this type. */
   readonly group?: string;
-  /** Dedicated doer for this type (defaults to the work system's doer). */
+  /** Dedicated doer for this type (defaults to the work system's doer) — caps this type's concurrency. */
   readonly doer?: Doer;
+  /**
+   * Dedicated {@link Queue} for this type (defaults to the work system's queue). Several types can
+   * share one `Queue` instance; the engine polls **every** distinct queue each tick, so grouping
+   * types onto separate queues isolates a flooding type — it can't starve types on another queue.
+   * Compose with a per-type {@link doer} to also cap its concurrency.
+   */
+  readonly queue?: Queue;
   /** Compute per-instance {@link WorkInstanceOptions} from the input (overridden by queue-time options). */
   readonly options?: (input: I) => WorkInstanceOptions;
   /** Per-type JSON codec (defaults to the system's global codec). */
@@ -257,11 +272,14 @@ export interface ActiveWork {
 
 /**
  * A lifecycle event delivered to {@link WorkSystemOptions.onEvent}. `'failed'` covers
- * both a retry (`willRetry: true`) and the terminal dead-letter (`willRetry: false`).
+ * both a retry (`willRetry: true`) and the terminal dead-letter (`willRetry: false`);
+ * `'deferred'` is a reschedule (a handler threw `WorkDelayError`) — it does **not** advance the
+ * attempt count. (An item put back merely because it arrived before its `startAt` is silent.)
  */
 export type WorkEvent =
   | { readonly kind: 'queued'; readonly id: string; readonly type: string; readonly groupId: string; readonly at: number }
   | { readonly kind: 'started'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly at: number }
+  | { readonly kind: 'deferred'; readonly id: string; readonly type: string; readonly groupId: string; readonly runAt: number; readonly at: number }
   | { readonly kind: 'succeeded'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly result: unknown; readonly at: number }
   | { readonly kind: 'failed'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly error: string; readonly willRetry: boolean; readonly at: number }
   | { readonly kind: 'group-done'; readonly groupId: string; readonly result: unknown; readonly at: number };
@@ -330,6 +348,16 @@ export interface WorkSystemOptions {
   readonly doer?: Doer;
   /** Queue poll interval when idle (ms, default 1000). */
   readonly pollInterval?: number;
+  /**
+   * Dynamic backpressure, checked before **every** poll. Return a number of **milliseconds to
+   * pause** before taking any work — even when doers have free slots — or `0`/nothing to proceed
+   * (the default). The loop sleeps the returned time, then checks again, so it's re-polled until it
+   * returns `0`. Use it to stop pulling work while an external resource is saturated (a database at
+   * capacity, a downstream API rate-limited, a memory ceiling). May be async. A throwing
+   * `backpressure` is reported via {@link onError} (`'queue'`) and the loop backs off `pollInterval`.
+   * Prefer a modest interval (it also bounds how long `stop()` waits for the loop to exit).
+   */
+  readonly backpressure?: () => MaybePromise<number | void>;
   /** Lease/visibility timeout for a pulled item (ms, default 30000). */
   readonly visibility?: number;
   /** Heartbeat interval extending the lease (ms, default `visibility / 3`). */

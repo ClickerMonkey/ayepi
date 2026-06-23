@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { retry, backoff, setDefaultRetryOptions, getDefaultRetryOptions, DEFAULT_RETRY_OPTIONS, type RetryState } from '../src/retry';
+import { retry, backoff, RetryAbort, setDefaultRetryOptions, getDefaultRetryOptions, DEFAULT_RETRY_OPTIONS, type RetryState } from '../src/retry';
 
 const noSleep = (): Promise<void> => Promise.resolve();
 
@@ -73,6 +73,80 @@ describe('retry', () => {
       { now: () => 1000 },
     );
     expect(seen).toMatchObject({ startAt: 1000, attempt: 1, lastAttemptAt: 1000, attempts: 3 });
+  });
+
+  it('RetryAbort stops immediately, fires onError (not onRetry), and throws the cause', async () => {
+    let calls = 0;
+    let onErr = 0;
+    let onRetry = 0;
+    let reported: unknown;
+    const cause = new Error('permanent');
+    await expect(
+      retry(
+        async () => {
+          calls++;
+          throw new RetryAbort(cause);
+        },
+        { attempts: 5, sleep: noSleep, onRetry: () => onRetry++, onError: (e) => void (onErr++, (reported = e)) },
+      ),
+    ).rejects.toBe(cause); // the wrapped cause is thrown, not the abort wrapper
+    expect(calls).toBe(1); // no further attempts
+    expect(onRetry).toBe(0);
+    expect(onErr).toBe(1);
+    expect(reported).toBe(cause);
+  });
+
+  it('on() returns false to stop on a plain error (no RetryAbort needed); the raw error is thrown', async () => {
+    let calls = 0;
+    let onRetry = 0;
+    const err = Object.assign(new Error('not found'), { status: 404 });
+    await expect(
+      retry(async () => {
+        calls++;
+        throw err;
+      }, { attempts: 5, sleep: noSleep, on: (e) => ((e as { status?: number }).status === 404 ? false : 0), onRetry: () => onRetry++ }),
+    ).rejects.toBe(err); // no RetryAbort to unwrap → the error itself
+    expect(calls).toBe(1); // stopped on the first 404
+    expect(onRetry).toBe(0);
+  });
+
+  it('on() returning ms sets a minimum pause (floor under backoff); may be async', async () => {
+    const recordSleep = (into: number[]) => (ms: number): Promise<void> => {
+      into.push(ms);
+      return Promise.resolve();
+    };
+    const slept: number[] = [];
+    let n = 0;
+    await expect(retry(async () => (n++, Promise.reject(new Error('x'))), { attempts: 3, base: 100, factor: 2, jitter: 0, sleep: recordSleep(slept), on: () => 5000 })).rejects.toThrow('x');
+    expect(n).toBe(3);
+    expect(slept).toEqual([5000, 5000]); // max(5000, backoff 100 / 200) = 5000 each
+
+    const slept2: number[] = [];
+    await expect(retry(async () => Promise.reject(new Error('y')), { attempts: 3, base: 100, factor: 2, jitter: 0, sleep: recordSleep(slept2), on: () => Promise.resolve(0) })).rejects.toThrow('y');
+    expect(slept2).toEqual([100, 200]); // 0 → normal backoff (async on awaited)
+  });
+
+  it('overriding on() keeps retrying through a RetryAbort (the default stop is replaced)', async () => {
+    let calls = 0;
+    let onRetry = 0;
+    const abort = new RetryAbort(new Error('would normally stop'));
+    await expect(
+      retry(
+        async () => {
+          calls++;
+          throw abort;
+        },
+        { attempts: 3, sleep: noSleep, on: () => 0, onRetry: () => onRetry++ }, // never stops → retried like any error
+      ),
+    ).rejects.toBe(abort); // the RetryAbort itself is thrown at exhaustion (not unwrapped, since it never aborted)
+    expect(calls).toBe(3);
+    expect(onRetry).toBe(2);
+  });
+
+  it('RetryAbort with no cause throws the abort itself; with errorResult it returns the value', async () => {
+    const abort = new RetryAbort();
+    await expect(retry(async () => Promise.reject(abort), { attempts: 3, sleep: noSleep })).rejects.toBe(abort);
+    expect(await retry<number>(async () => Promise.reject(new RetryAbort()), { attempts: 3, sleep: noSleep, errorResult: -1 })).toBe(-1);
   });
 
   it('honors global defaults via setDefaultRetryOptions', async () => {

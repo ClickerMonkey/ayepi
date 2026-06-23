@@ -131,6 +131,21 @@ describe('sqsQueue', () => {
     await q.fail(pulled('r5')); // default delay 0 → VisibilityTimeout 0
   });
 
+  it('clamps out-of-range delays/visibilities to SQS limits (push 900s, visibility 43200s)', async () => {
+    const { client, calls } = mockSqs({ ReceiveMessageCommand: {} });
+    const q = sqsQueue({ client, queueUrl: 'Q' });
+    await q.push('x', { delay: 2_000_000 }); // 2000s → clamped to 900
+    await q.pop(10, 50_000_000); // 50000s → clamped to 43200
+    await q.heartbeat(pulled('r'), 50_000_000); // → 43200
+    await q.fail(pulled('r'), 50_000_000); // → 43200
+    await q.fail(pulled('r'), -5); // negative → 0
+    const byName = (n: string): Record<string, unknown> => calls.find((c) => c.name === n)!.input;
+    expect(byName('SendMessageCommand').DelaySeconds).toBe(900);
+    expect(byName('ReceiveMessageCommand').VisibilityTimeout).toBe(43_200);
+    expect(byName('ChangeMessageVisibilityCommand').VisibilityTimeout).toBe(43_200);
+    expect(calls.filter((c) => c.name === 'ChangeMessageVisibilityCommand').at(-1)!.input.VisibilityTimeout).toBe(0);
+  });
+
   it('retries a throttled push, then reports + throws on exhaustion', async () => {
     const errs: unknown[] = [];
     let n = 0;

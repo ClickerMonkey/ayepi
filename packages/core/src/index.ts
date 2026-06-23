@@ -23,7 +23,7 @@
 export type { Simplify, MaybePromise, Json } from './types';
 
 /* --- retry --- */
-export { retry, backoff, DEFAULT_RETRY_OPTIONS, setDefaultRetryOptions, getDefaultRetryOptions } from './retry';
+export { retry, backoff, RetryAbort, DEFAULT_RETRY_OPTIONS, setDefaultRetryOptions, getDefaultRetryOptions } from './retry';
 export type { RetryOptions, RetryState } from './retry';
 
 /* --- path templates --- */

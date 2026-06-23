@@ -16,6 +16,33 @@
  * @module
  */
 
+import type { MaybePromise } from './types';
+
+/**
+ * Throw this from a {@link retry} operation to **stop retrying immediately**: the remaining
+ * attempts (and their backoff) are skipped, `onError` fires once, and `retry` then re-throws the
+ * abort's `cause` (or returns `errorResult` if one was configured). Use it for a permanent failure
+ * a retry can't fix — a 4xx, a validation error, a missing resource.
+ *
+ * ```ts
+ * await retry(async () => {
+ *   const res = await fetch(url);
+ *   if (res.status === 404) throw new RetryAbort(new Error('not found')); // don't retry a 404
+ *   if (!res.ok) throw new Error(`http ${res.status}`);                   // transient → retried
+ *   return res.json();
+ * });
+ * ```
+ */
+export class RetryAbort extends Error {
+  constructor(cause?: unknown, message = 'retry aborted') {
+    super(message, { cause });
+    this.name = 'RetryAbort';
+  }
+}
+
+/** The default {@link RetryOptions.on}: a {@link RetryAbort} stops the loop, anything else retries with the normal backoff. */
+const defaultOn = (err: unknown): number | false => (err instanceof RetryAbort ? false : 0);
+
 /** Live state passed to the operation and to the {@link RetryOptions} hooks. */
 export interface RetryState {
   /** When the first attempt started (epoch ms). */
@@ -44,6 +71,15 @@ export interface RetryOptions<R = unknown> {
   jitter?: number;
   /** If every attempt fails, resolve with this value instead of throwing. */
   errorResult?: R;
+  /**
+   * Decide what to do with a thrown error: return `false` to **stop** retrying (abort), or a number
+   * of **milliseconds to wait at least** before the next attempt — a floor under the normal backoff
+   * (e.g. honor a `Retry-After`; `0` = just use the backoff). May be async. Default:
+   * `(err) => (err instanceof RetryAbort ? false : 0)` — overriding it **replaces** that check
+   * (e.g. `on: (e) => (e.status === 404 ? false : 0)` aborts on a 404 with no `RetryAbort` wrapper).
+   * To keep retrying through a `RetryAbort`, override it (e.g. `on: () => 0`).
+   */
+  on?: (err: unknown) => MaybePromise<number | false>;
   /** Called after a successful attempt. */
   onSuccess?: (result: R, state: RetryState) => void;
   /** Called after a failed attempt that will be retried, before backing off. */
@@ -109,6 +145,7 @@ export async function retry<R>(fn: (state: RetryState) => Promise<R>, options: R
   const now = o.now ?? Date.now;
   const random = o.random ?? Math.random;
   const sleep = o.sleep ?? defaultSleep;
+  const decide = o.on ?? defaultOn;
   const hasErrorResult = 'errorResult' in options;
   const startAt = now();
   let lastError: unknown;
@@ -121,11 +158,18 @@ export async function retry<R>(fn: (state: RetryState) => Promise<R>, options: R
       o.onSuccess?.(result, state);
       return result;
     } catch (err) {
+      const decision = await decide(err); // `false` → stop; number → retry, pausing at least that long
+      if (decision === false) {
+        const cause = err instanceof RetryAbort ? (err.cause ?? err) : err; // unwrap a RetryAbort's cause; else the error itself
+        lastError = cause;
+        o.onError?.(cause, { startAt, attempt, attempts: o.attempts, lastAttemptAt, lastError: cause });
+        break; // `on` says permanent — stop now, no onRetry, no backoff
+      }
       lastError = err;
       const failed: RetryState = { startAt, attempt, attempts: o.attempts, lastAttemptAt, lastError: err };
       if (attempt < o.attempts) {
         o.onRetry?.(err, failed);
-        await sleep(backoff(attempt, o, random));
+        await sleep(Math.max(decision, backoff(attempt, o, random))); // `decision` (a number here) is a floor under the backoff
         continue;
       }
       o.onError?.(err, failed);

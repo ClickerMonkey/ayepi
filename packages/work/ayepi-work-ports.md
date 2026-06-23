@@ -63,6 +63,13 @@ interface PulledWork {
 before leasing fresh visible ones. `ack`/`heartbeat`/`fail` should be **token-gated**: a
 stale worker whose lease lapsed must not ack work another worker now owns.
 
+`fail(pulled, delay)` is also the engine's **put-back primitive**: the loop uses it to
+return an item it isn't ready to run (a saturated doer, an `accept` decline, or an item that
+arrived **before** its `startAt`) so it becomes visible again after `delay`. A backend whose
+single delay is capped (e.g. SQS) need only honor `delay` up to its own ceiling — the engine
+re-checks `startAt` on the next pop and re-defers until the item is actually due (see
+[Early-arrival re-defer](#early-arrival-re-defer-far-future-scheduling)).
+
 ### `PubSub` — best-effort cross-instance fanout
 
 Identical in shape to `@ayepi/core`'s `Broker`: publish an opaque string, subscribe to
@@ -300,6 +307,35 @@ The worker loop asks every relevant doer (and batcher) `available()`, pulls up t
 many (capped at `POLL_BATCH_CAP = 512`), and routes each item. If a doer is saturated, the
 item is `fail`ed back with a `pollInterval` delay to retry shortly or elsewhere.
 
+### Multi-queue fair polling
+
+A work system can run several distinct `Queue` instances at once: the system default plus any
+per-type `queue` (`WorkOptions.queue`). Each loop tick, the engine polls **every distinct
+queue**, giving each a fair `ceil(n / queues)` share of the total poll budget `n`, in
+round-robin order (the lead queue rotates each tick so none is consistently polled last). This
+is what makes per-type queues an **isolation boundary**: a type flooding its own queue can't
+starve types whose work lives on another queue — every queue is serviced each tick regardless.
+
+The loop avoids busy-spin: it keeps pulling immediately only while some queue returns a **full**
+share (more likely waiting) *and* it actually started work that round; it sleeps `pollInterval`
+when a full round started nothing (only over-capacity or not-yet-due work was available).
+
+### Early-arrival re-defer (far-future scheduling)
+
+When the engine pops an item, it first re-checks the item's `startAt`. If the item is still
+more than `SCHED_TOLERANCE = 1000` ms before its `startAt` — i.e. a backend that couldn't
+honor a long single delay handed it back early — the engine **puts it back** with
+`queue.fail(p, startAt - now)` instead of running it, and tries again later. This repeats
+(each round-trip waits at most the backend's delay ceiling) until the item is finally due.
+
+This is what makes **far-future scheduling correct** on delay-capping backends. `runAt`
+(absolute schedule) and a handler-thrown `WorkDelayError` deferral both resolve to a
+`startAt`; on a backend like SQS (which caps a single delay at 15 min and a visibility at
+12 h) a far-future item simply **bounces** — received early, re-deferred — every cap-length
+interval until due. A deferral (`WorkDelayError`) re-enqueues at the resolved `startAt`
+**without advancing `attempt`** and emits a `deferred` event; the early-arrival put-back is a
+plain `fail` (no event, no attempt change).
+
 ### Group open-counter + group-done
 
 Each group keeps an integer **open-work counter** at `group:<id>:open`, bumped `+1` when an
@@ -350,7 +386,9 @@ states })` exactly once.
 `POLL_BATCH_CAP = 512`, `RESULT_TTL = 86_400_000` (24 h, for results/states/group keys),
 `WAIT_TTL = 3_600_000` (1 h, for the wait registry), `WAIT_POLL = 250`,
 `UNHANDLED_GRACE = 100`, `UNKNOWN_TYPE_DELAY = 5000` (redelivery delay for an unknown type,
-in case another instance knows it), `SCHED_TICK = 1000`, `SCHED_LEASE_TTL = 90_000`,
+in case another instance knows it), `SCHED_TOLERANCE = 1000` (a popped item this far before
+its `startAt` is put back rather than run — drives the early-arrival re-defer),
+`SCHED_TICK = 1000`, `SCHED_LEASE_TTL = 90_000`,
 `STOP_DRAIN = 5000` (max `stop()` drain wait), `DEP_RETRY_ATTEMPTS = 1` (a dependency
 dead-letters on timeout rather than retrying).
 

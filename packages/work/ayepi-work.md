@@ -115,7 +115,8 @@ interface WorkOptions<I> {
   readonly retry?: RetryOptions                          // default retry policy for this type
   readonly priority?: number                             // default scheduling priority
   readonly group?: string                                // default fairness group
-  readonly doer?: Doer                                   // dedicated doer (else the system's doer)
+  readonly doer?: Doer                                   // dedicated doer (else the system's doer) — caps this type's concurrency
+  readonly queue?: Queue                                 // dedicated queue (else the system's queue) — isolates this type's load
   readonly options?: (input: I) => WorkInstanceOptions   // compute per-instance options from input
   readonly codec?: JsonCodec                             // per-type codec (else the global codec)
   readonly onEvent?: (event: WorkEvent) => void          // per-type lifecycle hook
@@ -194,6 +195,7 @@ bundled in-memory backend and an `unlimitedDoer`.
 | `retry` | `RetryOptions` | `@ayepi/core` defaults (`attempts:3, base:1000, factor:2, max:30000, jitter:0.5`) |
 | `doer` | `Doer` | `unlimitedDoer()` |
 | `pollInterval` | `number` (ms) | `1000` |
+| `backpressure` | `() => MaybePromise<number \| void>` | — (always proceed) |
 | `visibility` | `number` (ms) | `30000` |
 | `heartbeat` | `number` (ms) | `Math.floor(visibility / 3)` |
 | `prefix` | `string` | `'work:'` |
@@ -284,13 +286,14 @@ const group = await w.enqueue(parent({ ids: ['a', 'b'] })) // resolves after bot
 
 ## Instance options — `WorkInstanceOptions`
 
-`delay`, `retry`, `priority`, `group`, and `skipQueue` are **per-instance** — provided at
-queue time, set as per-type constants, or computed from the input — and are **serialized
-with the item**, so the worker that runs it applies the same policy.
+`delay`, `runAt`, `retry`, `priority`, `group`, and `skipQueue` are **per-instance** —
+provided at queue time, set as per-type constants, or computed from the input — and are
+**serialized with the item**, so the worker that runs it applies the same policy.
 
 ```ts
 interface WorkInstanceOptions {
   readonly delay?: number        // sets startAt = queueAt + delay
+  readonly runAt?: number        // absolute start (epoch ms) — alternative to delay, wins over it
   readonly retry?: RetryOptions  // retry policy override for this item
   readonly priority?: number     // higher runs first (consumed by the doer)
   readonly group?: string        // fairness group label (consumed by balancedDoer)
@@ -300,7 +303,15 @@ interface WorkInstanceOptions {
 
 ```ts
 w.enqueue(sendEmail({ to }), { delay: 5_000, priority: 10, group: to })
+w.enqueue(report({}), { runAt: Date.parse('2030-01-01T03:00:00Z') }) // far-future scheduled
 ```
+
+`runAt` is an **absolute** schedule (epoch ms): `startAt = runAt` and `delay = runAt - now`,
+so `runAt` wins over `delay` when both are given. It works for **arbitrarily far** times even
+on backends that cap a single delay (e.g. SQS's 15-min `DelaySeconds`): the engine re-defers
+an item that arrives early until its `startAt`. See
+[Deferral & scheduling](#deferral--scheduling) below and the
+[ports doc](./ayepi-work-ports.md#early-arrival-re-defer-far-future-scheduling).
 
 **Resolution precedence** (last wins), per the engine's `resolveOptions`:
 `queue-time options` > `type options(input)` > `type constants` > defaults. For `retry`
@@ -372,6 +383,128 @@ createWork({ work: [/* ... */] as const, doer: balancedDoer({ max: 20 }) })
 Re-exported doer types: `Doer`, `DoerTaskOptions`, `BoundedDoerOptions`,
 `UnlimitedDoerOptions`.
 
+## Load-sharing / fairness — per-type `queue`
+
+By default every type shares the system's one `Queue`, so a type that floods the queue can
+starve the others behind it. Give a type its **own** `Queue` (`WorkOptions.queue`) to isolate
+its load: the worker loop polls **every distinct queue each tick** (a fair `ceil(n / queues)`
+share apiece, round-robin), so a flood on one queue can't starve types on another. Several
+types can share one `Queue` instance — group them to draw the isolation boundary where you
+want it.
+
+```ts
+import { defineWork, createWork, memoryQueue, balancedDoer } from '@ayepi/work'
+
+const bulkQ = memoryQueue() // a separate queue for the noisy type
+
+const ingest = defineWork('ingest', handler, { queue: bulkQ })            // floods stay on bulkQ
+const checkout = defineWork('checkout', handler)                          // on the default queue, unaffected
+const w = createWork({ work: [ingest, checkout] as const })
+```
+
+Per-type `queue` **composes with** the per-type `doer`: `queue` isolates a type at the
+**queue boundary** (it can't starve types on another queue), while `doer` caps how many of
+that type run **at once**. Use both to both isolate a noisy type's intake and bound its
+concurrency:
+
+```ts
+const ingest = defineWork('ingest', handler, {
+  queue: bulkQ,                      // isolate its intake from other types
+  doer: balancedDoer({ max: 4 }),    // and cap it to 4 concurrent
+})
+```
+
+The loop doesn't busy-spin: it keeps pulling immediately only while a queue returns a **full**
+share *and* it's actually starting work, and backs off (sleeps `pollInterval`) when a full
+round started nothing (only over-capacity or not-yet-due work was available).
+
+### Dynamic backpressure — `backpressure`
+
+A `WorkSystemOptions.backpressure` hook is checked **before every poll**. Return a number of
+**milliseconds to pause** before taking any work — even when doers have free slots — or `0` /
+nothing to proceed. The loop sleeps the returned time and checks again, so it's re-polled until
+it returns `0`. Use it to stop pulling while an external resource is saturated (a database at
+capacity, a downstream API rate-limited, a memory ceiling) and let it recover before resuming:
+
+```ts
+createWork({
+  ...backend,
+  work: [...] as const,
+  backpressure: async () => (await db.poolUtilization()) > 0.9 ? 2000 : 0, // pause 2s while the DB pool is hot
+})
+```
+
+It may be async. A throwing `backpressure` is reported via `onError` (`'queue'`) and the loop
+backs off `pollInterval`. Prefer a modest pause (it's re-polled, and it also bounds how long
+`stop()` waits for the loop to exit). `backpressure` gates the durable queue loop only;
+`skipQueue` work runs in-process regardless.
+
+## Deferral & scheduling
+
+### `runAt` — absolute scheduling
+
+`enqueue(work, { runAt })` schedules an item for an absolute time (epoch ms). `runAt` is an
+alternative to `delay` and **wins over it**; it works for arbitrarily-far times even on
+backends that cap a single delay — the engine re-defers an early arrival until its `startAt`
+(see [ports](./ayepi-work-ports.md#early-arrival-re-defer-far-future-scheduling)).
+
+```ts
+w.enqueue(report({ day }), { runAt: Date.parse('2030-01-01T03:00:00Z') })
+```
+
+### `WorkDelayError` — defer from a handler (reschedule, not retry)
+
+A handler throws `WorkDelayError` to **defer** its item to a later time. This is a
+**reschedule, not a retry**: the `attempt` count is **unchanged**, so a handler can defer
+indefinitely (e.g. "the upstream isn't ready, check again in 5 minutes") without ever
+exhausting its retries or dead-lettering.
+
+```ts
+import { WorkDelayError } from '@ayepi/work'
+
+const poll = defineWork('poll', async (input, ctx) => {
+  if (!(await upstreamReady())) throw new WorkDelayError({ delay: 5 * 60_000 }) // try again in 5 min
+  return doWork(input)
+})
+```
+
+`WorkDelayError`'s `when` is a `WorkDelaySpec` — give it `runAt` (absolute epoch ms, wins) or
+`delay` (relative ms, resolved to `now + delay`):
+
+```ts
+class WorkDelayError extends Error {
+  constructor(when: { runAt?: number; delay?: number }, message?: string) // default 'work deferred'
+  readonly when: WorkDelaySpec
+}
+interface WorkDelaySpec {
+  readonly runAt?: number  // absolute (epoch ms) — wins over delay
+  readonly delay?: number  // relative (ms) — runAt = now + delay
+}
+```
+
+A deferral re-enqueues the item at the resolved time **without** advancing `attempt`, removes
+the current delivery, and emits a `deferred` event (`{ kind: 'deferred'; id; type; groupId;
+runAt; at }`). A **batch** handler throwing `WorkDelayError` defers **every** item in the
+batch. As with `runAt`, a far-future deferral is honored even on delay-capping backends via
+the engine's early-arrival re-defer.
+
+### `RetryAbort` is re-exported (not a work-handler special case)
+
+`@ayepi/core`'s `RetryAbort` is re-exported here for convenience. It stops a `retry()` call
+immediately (skip the remaining attempts, re-throw its `cause`). It is **not** special-cased
+by the work engine: a work handler that throws `RetryAbort` is treated as an ordinary handler
+failure — it retries/dead-letters by the normal `attempt` count. To stop early from a handler,
+either return, or throw `WorkDelayError` to defer. Use `RetryAbort` inside a handler only to
+abort a nested `retry()` you call yourself.
+
+What a `retry()` does on each error is configurable per call:
+`RetryOptions.on?: (err) => MaybePromise<number | false>` returns `false` to **stop**, or a number
+of **ms to wait at least** before the next attempt (a floor under the normal backoff; `0` = just
+back off). Default `(err) => (err instanceof RetryAbort ? false : 0)`, so e.g.
+`retry(fn, { on: (e) => (e.status === 404 ? false : e.status === 429 ? 30_000 : 0) })` stops on a
+404 and waits ≥30s on a 429 — no `RetryAbort` wrapper needed. Overriding `on` replaces the default,
+so to keep retrying through a `RetryAbort` just return a number (e.g. `on: () => 0`) instead of `false`.
+
 ## Lifecycle events & affinity
 
 `onEvent(event)` (global, and per-type via `WorkOptions.onEvent`) fires for:
@@ -380,6 +513,7 @@ Re-exported doer types: `Doer`, `DoerTaskOptions`, `BoundedDoerOptions`,
 type WorkEvent =
   | { kind: 'queued';     id; type; groupId; at }
   | { kind: 'started';    id; type; groupId; attempt; at }
+  | { kind: 'deferred';   id; type; groupId; runAt; at }                        // rescheduled (WorkDelayError); attempt unchanged
   | { kind: 'succeeded';  id; type; groupId; attempt; result; at }
   | { kind: 'failed';     id; type; groupId; attempt; error; willRetry; at }   // willRetry:false ⇒ dead-letter
   | { kind: 'group-done'; groupId; result; at }

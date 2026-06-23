@@ -17,8 +17,9 @@ import { unlimitedDoer, type Doer } from '@ayepi/core/doer';
 import { backoff, getDefaultRetryOptions, retry, type RetryOptions } from '@ayepi/core/retry';
 import { defaultCodec, type JsonCodec } from './json';
 import { memoryBackend } from './memory';
-import type { Backend, PulledWork } from './ports';
+import type { Backend, PulledWork, Queue } from './ports';
 import { identityLogWith, merge, sleep, uuid } from './internal';
+import { WorkDelayError } from './errors';
 import { DEPENDENCY_TYPE, dependencyHandler } from './dependency';
 import { startSchedule } from './schedule';
 import { defineWork } from './types';
@@ -57,6 +58,8 @@ const WAIT_POLL = 250;
 const UNHANDLED_GRACE = 100;
 /** Re-delivery delay for a work type this instance doesn't know (ms). */
 const UNKNOWN_TYPE_DELAY = 5000;
+/** A popped item this far (ms) before its `startAt` is put back rather than run (handles backends that can't honor a long delay). */
+const SCHED_TOLERANCE = 1000;
 /** Scheduler tick interval (ms). */
 const SCHED_TICK = 1000;
 /** TTL for a schedule's per-fire lease (ms). */
@@ -83,6 +86,8 @@ interface Envelope {
 /** Resolved per-instance options. */
 interface Resolved {
   readonly delay: number;
+  /** Absolute start time (epoch ms) when `runAt`/`delay` was given; else undefined → `queueAt + delay`. */
+  readonly runAt?: number;
   readonly retry: RetryOptions;
   readonly priority: number;
   readonly group?: string;
@@ -104,7 +109,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     pubsub: opts.pubsub ?? mem!.pubsub,
     store: opts.store ?? mem!.store,
   };
-  const { queue, pubsub, store } = backend;
+  const { pubsub, store } = backend;
 
   const globalCodec: JsonCodec = opts.codec ?? defaultCodec;
   const globalDoer: Doer = opts.doer ?? unlimitedDoer();
@@ -163,6 +168,16 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   for (const builder of opts.work ?? []) {registry.set(builder.type, builder);}
   const codecFor = (type: string): JsonCodec => registry.get(type)?.def.options.codec ?? globalCodec;
   const doerFor = (type: string): Doer => registry.get(type)?.def.options.doer ?? globalDoer;
+  /** The queue a type's items live on (its own, or the system default). New pushes for `type` go here. */
+  const queueFor = (type: string): Queue => registry.get(type)?.def.options.queue ?? backend.queue;
+  /** Every distinct queue the registry uses (the default + any per-type queues) — polled fairly by the loop. */
+  const distinctQueues = (): Queue[] => {
+    const set = new Set<Queue>([backend.queue]);
+    for (const b of registry.values()) {
+      if (b.def.options.queue) {set.add(b.def.options.queue);}
+    }
+    return [...set];
+  };
 
   /** Resolve an item's effective options: queue-time > type `options(input)` > type constants > defaults. */
   const resolveOptions = (type: string, input: unknown, qOpts?: WorkInstanceOptions): Resolved => {
@@ -170,6 +185,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     const computed = tOpts?.options?.(input as never) ?? {};
     return {
       delay: qOpts?.delay ?? computed.delay ?? 0,
+      runAt: qOpts?.runAt ?? computed.runAt, // absolute schedule wins over delay (resolved into startAt at submit)
       priority: qOpts?.priority ?? computed.priority ?? tOpts?.priority ?? 0,
       group: qOpts?.group ?? computed.group ?? tOpts?.group,
       // global retry defaults (incl. setDefaultRetryOptions) < system < type < computed < queue-time
@@ -251,15 +267,18 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   const storeClaim = (key: string): Promise<boolean> => Promise.resolve(store.setIfNotExists(k(key), '1', RESULT_TTL));
 
   /* ---- queued enqueue plumbing ---- */
-  const pushEnvelope = (env: Envelope, delay: number): Promise<void> => port(() => Promise.resolve(queue.push(JSON.stringify(env), { delay })).then(() => undefined));
+  /** Push an envelope onto **its type's** queue (default or per-type), invisible for `delay` ms. */
+  const pushEnvelope = (env: Envelope, delay: number): Promise<void> => port(() => Promise.resolve(queueFor(env.type).push(JSON.stringify(env), { delay })).then(() => undefined));
+  /** Resolve when a deferred/scheduled item should next run (absolute epoch ms). */
+  const resolveRunAt = (when: { runAt?: number; delay?: number }): number => when.runAt ?? now() + (when.delay ?? 0);
 
   const submitQueued = (id: string, type: string, input: unknown, groupId: string, ro: Resolved): Promise<void> => {
     const queueAt = now();
-    const startAt = queueAt + ro.delay;
+    const startAt = ro.runAt ?? queueAt + ro.delay; // absolute schedule, else queueAt + delay
     return (async () => {
       await groupIncr(groupId, +1);
       await setState({ id, type, status: 'pending', attempt: 1, queueAt, startAt, priority: ro.priority, group: ro.group }, groupId);
-      await pushEnvelope({ id, type, groupId, input: codecFor(type).stringify(input), queueAt, startAt, attempt: 1, priority: ro.priority, group: ro.group, retry: ro.retry }, ro.delay);
+      await pushEnvelope({ id, type, groupId, input: codecFor(type).stringify(input), queueAt, startAt, attempt: 1, priority: ro.priority, group: ro.group, retry: ro.retry }, Math.max(0, startAt - queueAt));
       emit({ kind: 'queued', id, type, groupId, at: queueAt });
     })();
   };
@@ -409,7 +428,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
    */
   const runImmediate = (id: string, type: string, input: unknown, groupId: string, ro: Resolved): Promise<void> => {
     const queueAt = now();
-    const startAt = queueAt + ro.delay;
+    const startAt = ro.runAt ?? queueAt + ro.delay;
     const builder = registry.get(type);
     const env: Envelope = { id, type, groupId, input: codecFor(type).stringify(input), queueAt, startAt, attempt: 1, priority: ro.priority, group: ro.group, retry: ro.retry };
     return (async () => {
@@ -417,31 +436,42 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
       await setState({ id, type, status: 'pending', attempt: 1, queueAt, startAt, priority: ro.priority, group: ro.group }, groupId);
       emit({ kind: 'queued', id, type, groupId, at: queueAt });
       if (!builder) {
-        await deadLetterItem(null, env, `unknown work type: ${type}`);
+        await deadLetterItem(null, env, `unknown work type: ${type}`, null);
         return;
       }
       activeMap.set(id, { id, type, groupId, status: 'pending', attempt: 1, priority: ro.priority, group: ro.group, queueAt, startAt });
-      doerFor(type).do(() => execute(null, env, input, builder.def, null));
+      doerFor(type).do(() => execute(null, env, input, builder.def, null, null));
     })();
   };
 
   /* ---- processing ---- */
-  const startHeartbeat = (p: PulledWork, id: string): ReturnType<typeof setInterval> => {
+  /** Keep a leased item's lease (and its heartbeat key) alive on the **queue it came from**. */
+  const startHeartbeat = (p: PulledWork, id: string, q: Queue): ReturnType<typeof setInterval> => {
     const hb = setInterval(() => {
-      void Promise.resolve(queue.heartbeat(p, visibility));
+      void Promise.resolve(q.heartbeat(p, visibility));
       void Promise.resolve(store.set(k(`hb:${id}`), String(now()), visibility));
     }, heartbeatEvery);
     unref(hb);
     return hb;
   };
 
-  const deadLetterItem = async (p: PulledWork | null, env: Envelope, error: string, runAt?: number): Promise<void> => {
+  /** Re-enqueue an item to run at `runAt` (epoch ms) without advancing its attempt — a reschedule, not a retry. */
+  const deferItem = async (p: PulledWork | null, env: Envelope, q: Queue | null, runAt: number): Promise<void> => {
+    const startAt = Math.max(runAt, now());
+    const next: Envelope = { ...env, startAt }; // SAME attempt — a deferral is not a failed delivery
+    await setState({ id: env.id, type: env.type, status: 'pending', attempt: env.attempt, queueAt: env.queueAt, startAt, priority: env.priority, group: env.group }, env.groupId);
+    if (p && q) {await port(() => Promise.resolve(q.ack(p)));} // remove the current delivery (it was leased)...
+    await pushEnvelope(next, Math.max(0, startAt - now())); // ...and re-enqueue to the type's queue (backend clamps; accept re-defers if still early)
+    emit({ kind: 'deferred', id: env.id, type: env.type, groupId: env.groupId, runAt: startAt, at: now() });
+  };
+
+  const deadLetterItem = async (p: PulledWork | null, env: Envelope, error: string, q: Queue | null, runAt?: number): Promise<void> => {
     const at = now();
     await port(() => Promise.resolve(store.set(k(`item:${env.id}:error`), error, RESULT_TTL)));
     await setState({ id: env.id, type: env.type, status: 'dead', attempt: env.attempt, error, queueAt: env.queueAt, startAt: env.startAt, runAt, endAt: at, priority: env.priority, group: env.group }, env.groupId);
-    if (p) {
-      await Promise.resolve(queue.deadLetter?.(p.body, error));
-      await port(() => Promise.resolve(queue.ack(p)));
+    if (p && q) {
+      await Promise.resolve(q.deadLetter?.(p.body, error));
+      await port(() => Promise.resolve(q.ack(p)));
     }
     notify({ kind: 'done', id: env.id, groupId: env.groupId, error }); // detached wake
     emit({ kind: 'failed', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, error, willRetry: false, at });
@@ -466,27 +496,27 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     await persistRunning(env, runAt);
   };
 
-  const finishSuccess = async (p: PulledWork | null, env: Envelope, runAt: number, output: unknown): Promise<void> => {
+  const finishSuccess = async (p: PulledWork | null, env: Envelope, runAt: number, output: unknown, q: Queue | null): Promise<void> => {
     const at = now();
     await port(() => Promise.resolve(store.set(k(`result:${env.id}`), codecFor(env.type).stringify(output), RESULT_TTL)));
     await setState(
       { id: env.id, type: env.type, status: 'success', attempt: env.attempt, result: output, queueAt: env.queueAt, startAt: env.startAt, runAt, endAt: at, priority: env.priority, group: env.group },
       env.groupId,
     );
-    if (p) {await port(() => Promise.resolve(queue.ack(p)));}
+    if (p && q) {await port(() => Promise.resolve(q.ack(p)));}
     notify({ kind: 'done', id: env.id, groupId: env.groupId }); // detached wake; the doer slot frees without waiting on pub/sub
     emit({ kind: 'succeeded', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, result: output, at });
     await settleGroup(env.groupId);
   };
 
-  const finishFailure = async (p: PulledWork | null, env: Envelope, runAt: number, err: unknown): Promise<void> => {
+  const finishFailure = async (p: PulledWork | null, env: Envelope, runAt: number, err: unknown, q: Queue | null): Promise<void> => {
     if (env.attempt < attemptsOf(env.retry)) {
       const delay = backoff(env.attempt, env.retry, random);
       emit({ kind: 'failed', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, error: errString(err), willRetry: true, at: now() });
-      if (p) {await port(() => Promise.resolve(queue.ack(p)));} // remove this delivery (if leased)...
+      if (p && q) {await port(() => Promise.resolve(q.ack(p)));} // remove this delivery (if leased)...
       await rePush(env, delay); // ...and re-enter the queue (attempt + 1) — retry = re-enqueue, durable + fleet-wide
     } else {
-      await deadLetterItem(p, env, errString(err), runAt);
+      await deadLetterItem(p, env, errString(err), q, runAt);
     }
   };
 
@@ -506,8 +536,8 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
       claim: storeClaim,
     });
 
-  /** The task handed to a doer: run a single item (leased from the queue, or `skipQueue` with `p`/`hb` null). */
-  const execute = async (p: PulledWork | null, env: Envelope, input: unknown, def: AnyWorkBuilder['def'], hb: ReturnType<typeof setInterval> | null): Promise<void> => {
+  /** The task handed to a doer: run a single item (leased from queue `q`, or `skipQueue` with `p`/`hb`/`q` null). */
+  const execute = async (p: PulledWork | null, env: Envelope, input: unknown, def: AnyWorkBuilder['def'], hb: ReturnType<typeof setInterval> | null, q: Queue | null): Promise<void> => {
     const runAt = now();
     markRunningSync(env, runAt); // flip the active-map entry synchronously (cheap, on the critical path)...
     // ...but persist the `running` state + emit `started` ALONGSIDE the handler — the handler doesn't
@@ -522,15 +552,19 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
         output = await logWith(logCtx, () => Promise.resolve(def.handler(input as never, ctx)));
         await Promise.all(pending); // ensure child enqueues + setResult landed before settling
       } catch (err) {
-        await running; // order the 'running' write before the terminal 'failed'/'dead' state
-        await finishFailure(p, env, runAt, err); // the handler (or a child enqueue) failed → retry/dead-letter
+        await running; // order the 'running' write before the terminal/deferred state
+        if (err instanceof WorkDelayError) {
+          await deferItem(p, env, q, resolveRunAt(err.when)); // handler asked to run later → reschedule, attempt unchanged
+        } else {
+          await finishFailure(p, env, runAt, err, q); // the handler (or a child enqueue) failed → retry/dead-letter
+        }
         return;
       }
       // the handler succeeded — recording that is best-effort: a store/ack/pub-sub error here must
       // NOT re-run the handler (which would duplicate its work). Report it instead of retrying.
       try {
         await running; // order the 'running' write before the terminal 'success' state
-        await finishSuccess(p, env, runAt, output);
+        await finishSuccess(p, env, runAt, output, q);
       } catch (err) {
         report(err, 'commit');
       }
@@ -546,6 +580,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     readonly env: Envelope;
     readonly input: unknown;
     readonly hb: ReturnType<typeof setInterval>;
+    readonly q: Queue; // the queue this item was leased from (for ack/fail)
   }
   type BatchConfigLoose = NonNullable<AnyWorkBuilder['def']['batch']>;
 
@@ -561,11 +596,16 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
         }
         outputs = ran;
       } catch (err) {
-        await Promise.all(items.map((it) => finishFailure(it.p, it.env, runAt, err))); // a batch failure retries each item independently
+        if (err instanceof WorkDelayError) {
+          const runLater = resolveRunAt(err.when);
+          await Promise.all(items.map((it) => deferItem(it.p, it.env, it.q, runLater))); // batch asked to run later → defer every item
+        } else {
+          await Promise.all(items.map((it) => finishFailure(it.p, it.env, runAt, err, it.q))); // a batch failure retries each item independently
+        }
         return;
       }
       // each item succeeded — committing its result is best-effort and must not re-run the batch
-      await Promise.all(items.map((it, i) => Promise.resolve(finishSuccess(it.p, it.env, runAt, outputs[i])).catch((err: unknown) => report(err, 'commit'))));
+      await Promise.all(items.map((it, i) => Promise.resolve(finishSuccess(it.p, it.env, runAt, outputs[i], it.q)).catch((err: unknown) => report(err, 'commit'))));
     } finally {
       for (const it of items) {
         clearInterval(it.hb);
@@ -613,34 +653,46 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     return b;
   };
 
-  /** Parse + validate a leased item and route it to a batcher or doer (or defer/dead-letter). */
-  const accept = async (p: PulledWork): Promise<void> => {
+  /**
+   * Parse + validate an item leased from queue `q` and route it to a batcher or doer. Returns `true`
+   * if it **started** the item, `false` if it put it back (early/not-due, affinity decline, saturated
+   * doer/batcher, unknown type) or dropped it — the loop uses this to keep pulling vs back off.
+   */
+  const accept = async (p: PulledWork, q: Queue): Promise<boolean> => {
     let env: Envelope;
     try {
       env = JSON.parse(p.body) as Envelope;
     } catch {
-      await Promise.resolve(queue.ack(p)); // unparseable — drop it
-      return;
+      await Promise.resolve(q.ack(p)); // unparseable — drop it
+      return false;
     }
+
+    // not due yet — a backend that couldn't honor a long delay returned it early; put it back until `startAt`
+    const due = now();
+    if (env.startAt - due > SCHED_TOLERANCE) {
+      await Promise.resolve(q.fail(p, env.startAt - due));
+      return false;
+    }
+
     const { id, type, groupId } = env;
     const builder = registry.get(type);
     if (!builder) {
-      if (env.attempt >= attemptsOf(env.retry)) {await deadLetterItem(p, env, `unknown work type: ${type}`);}
-      else {await Promise.resolve(queue.fail(p, UNKNOWN_TYPE_DELAY));} // another instance may know it
-      return;
+      if (env.attempt >= attemptsOf(env.retry)) {await deadLetterItem(p, env, `unknown work type: ${type}`, q);}
+      else {await Promise.resolve(q.fail(p, UNKNOWN_TYPE_DELAY));} // another instance may know it
+      return false;
     }
     let input: unknown;
     try {
       input = codecFor(type).parse(env.input);
     } catch (e) {
-      await deadLetterItem(p, env, `bad input: ${errString(e)}`);
-      return;
+      await deadLetterItem(p, env, `bad input: ${errString(e)}`, q);
+      return false;
     }
 
     // instance affinity — decline here (deferred ~one poll cycle) so another instance picks it up
     if (opts.accept && !opts.accept({ id, type, groupId, attempt: env.attempt, input })) {
-      await Promise.resolve(queue.fail(p, pollInterval));
-      return;
+      await Promise.resolve(q.fail(p, pollInterval));
+      return false;
     }
 
     const addActive = (): void => {
@@ -651,22 +703,23 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     if (builder.def.batch) {
       const batcher = batcherFor(type);
       if (batcher.available() <= 0) {
-        await Promise.resolve(queue.fail(p, pollInterval));
-        return;
+        await Promise.resolve(q.fail(p, pollInterval));
+        return false;
       }
       addActive();
-      batcher.add({ p, env, input, hb: startHeartbeat(p, id) });
-      return;
+      batcher.add({ p, env, input, hb: startHeartbeat(p, id, q), q });
+      return true;
     }
 
     const doer = doerFor(type);
     if (doer.available() <= 0) {
-      await Promise.resolve(queue.fail(p, pollInterval)); // doer saturated — try again shortly / elsewhere
-      return;
+      await Promise.resolve(q.fail(p, pollInterval)); // doer saturated — try again shortly / elsewhere
+      return false;
     }
     addActive();
-    const hb = startHeartbeat(p, id);
-    doer.do(() => execute(p, env, input, builder.def, hb), { group: env.group, priority: env.priority, createdAt: env.queueAt });
+    const hb = startHeartbeat(p, id, q);
+    doer.do(() => execute(p, env, input, builder.def, hb, q), { group: env.group, priority: env.priority, createdAt: env.queueAt });
+    return true;
   };
 
   /* ---- worker loop ---- */
@@ -685,21 +738,38 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     return Math.min(POLL_BATCH_CAP, n);
   };
 
+  let pollCursor = 0; // round-robin start across queues, so no queue is consistently polled last
   const loop = async (): Promise<void> => {
     while (running) {
       try {
+        // dynamic backpressure: skip taking work (even with free capacity) while the hook asks us to wait
+        const pause = (await opts.backpressure?.()) ?? 0;
+        if (pause > 0) {
+          await sleep(pause);
+          continue;
+        }
         const n = pollCount();
         if (n <= 0) {
           await sleep(pollInterval);
           continue;
         }
-        const pulled = await Promise.resolve(queue.pop(n, visibility));
-        if (pulled.length === 0) {
-          await sleep(pollInterval);
-          continue;
+        // poll EVERY distinct queue each tick (a fair share apiece) so a flood on one queue can't
+        // starve types on another; rotate which queue leads.
+        const qs = distinctQueues();
+        const share = Math.max(1, Math.ceil(n / qs.length));
+        let accepted = 0;
+        let anyFull = false;
+        for (let i = 0; i < qs.length; i++) {
+          const q = qs[(pollCursor + i) % qs.length]!;
+          const pulled = await Promise.resolve(q.pop(share, visibility));
+          if (pulled.length >= share) {anyFull = true;} // this queue had at least a full share → more likely waiting
+          const started = await Promise.all(pulled.map((p) => accept(p, q).catch((err: unknown) => (report(err, 'queue'), false)))); // a routing error never tears down the loop
+          accepted += started.filter(Boolean).length;
         }
-        await Promise.all(pulled.map((p) => accept(p).catch((err: unknown) => report(err, 'queue')))); // a routing error never tears down the loop
-        if (pulled.length < n) {await sleep(pollInterval);} // not saturated → idle wait; else loop to stay at capacity
+        pollCursor = (pollCursor + 1) % qs.length;
+        // keep pulling immediately only while a queue is saturated AND we're actually starting work;
+        // back off when a full round started nothing (only over-capacity/not-due work is available).
+        if (accepted === 0 || !anyFull) {await sleep(pollInterval);}
       } catch (err) {
         report(err, 'queue'); // a poll/queue error never tears down the loop — sleep and retry
         await sleep(pollInterval);
