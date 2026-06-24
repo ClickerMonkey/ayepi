@@ -117,6 +117,24 @@ export { swaggerHtml, redocHtml, asyncapiHtml } from './docs-ui';
 export type { ClientWs, ClientOptions, ApiClient, GetUrlKeys } from './client';
 export { client } from './client';
 
+/* --- caller (client-side call policy) --- */
+export { createClientCache, createCallerContext, stableStringify, CallerRateLimited } from './caller';
+export type {
+  Caller,
+  CallerOptions,
+  CallerCacheConfig,
+  CallerDebounceConfig,
+  CallerRateLimitConfig,
+  CallerRetryConfig,
+  Tagger,
+  ClientCache,
+  ClientCacheOptions,
+  CallerContext,
+  CacheStoreSpec,
+  CacheHit,
+  KVStore,
+} from './caller';
+
 /* --- websocket transport --- */
 export type {
   WsTransport,

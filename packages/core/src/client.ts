@@ -19,9 +19,10 @@ import type { z } from 'zod';
 import type { Get, Json } from './types';
 import { ApiError } from './errors';
 import type { Manifest, ManifestEndpoint } from './manifest';
-import type { EndpointConfig, AnySpec, EventConfig, EventsOf } from './endpoint';
+import type { EndpointConfig, AnySpec, AnyEndpoint, EventConfig, EventsOf } from './endpoint';
 import type { ClientData, CallArgs, CallReturn, CallOptsBase, UploadProgress } from './payload';
 import { splitPattern, buildParts } from './path';
+import { makeCaller, createCallerContext, type Caller, type CallerOptions, type CallerEndpoint, type ClientCacheOptions } from './caller';
 
 /** Response statuses that must carry a null body (the `Response` constructor rejects a body for these). */
 const NULL_BODY_STATUS = new Set([101, 204, 205, 304]);
@@ -144,6 +145,8 @@ export interface ClientOptions {
   readonly headers?: Readonly<Record<string, string>> | (() => Readonly<Record<string, string>>);
   /** Override `fetch` (tests / in-memory wiring). */
   readonly fetchImpl?: (req: Request) => Promise<Response>;
+  /** Defaults for the per-client {@link caller} caches (`max`/`ttl`/default `store`). */
+  readonly cache?: ClientCacheOptions;
   /** WebSocket transport; required for ws calls and event subscriptions. */
   readonly ws?: ClientWs;
   /** Preferred transport for dual endpoints (default `'http'`). */
@@ -166,6 +169,13 @@ export type GetUrlKeys<S extends AnySpec> = {
 export interface ApiClient<S extends AnySpec> {
   /** Call an endpoint. Arguments and return type are derived per endpoint. */
   call<K extends keyof S['endpoints'] & string>(name: K, ...args: CallArgs<S['endpoints'][K]>): CallReturn<S['endpoints'][K]>;
+  /**
+   * A **caller**: `call` wrapped with stateful client-side policy — caching (TTL/tags/SWR/storage),
+   * debounce (with accumulation), rate limiting, last-response-only, in-flight dedupe, retry, and
+   * lifecycle hooks. Caches are shared across a client's callers, so a mutating caller's tag
+   * invalidation clears other callers' cached reads.
+   */
+  caller<K extends keyof S['endpoints'] & string>(name: K, options?: CallerOptions<S['endpoints'][K]>): Caller<S['endpoints'][K]>;
   /**
    * Build the full URL for a `GET` endpoint — hand it to the browser
    * (`location`, `<a href>`, `window.open`) for natively stream-downloaded
@@ -203,6 +213,7 @@ export interface ApiClient<S extends AnySpec> {
 export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
   const manifest = resolveManifest(opts.manifest);
   const doFetch = opts.fetchImpl ?? ((req: Request) => fetch(req));
+  const callerCtx = createCallerContext(opts.cache);
   const baseHeaders = () => (typeof opts.headers === 'function' ? opts.headers() : (opts.headers ?? {}));
   const vcfg = (name: string): EndpointConfig | undefined => opts.validate?.endpoints[name]?.cfg;
   const vParse = (name: string, data: unknown): unknown => {
@@ -602,5 +613,11 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
     };
   }
 
-  return { call, on, url } as unknown as ApiClient<S>; // internal cast: variadic impls behind the exact typed surface
+  function caller(name: string, options?: CallerOptions<AnyEndpoint>): unknown {
+    const m = manifest.endpoints[name];
+    if (!m) {throw new Error(`unknown endpoint "${name}"`);}
+    return makeCaller(name, m as CallerEndpoint, (...args: unknown[]) => call(name, ...args), callerCtx, options ?? {});
+  }
+
+  return { call, on, url, caller } as unknown as ApiClient<S>; // internal cast: variadic impls behind the exact typed surface
 }

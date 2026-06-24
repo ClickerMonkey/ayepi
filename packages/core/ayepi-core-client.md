@@ -172,6 +172,61 @@ off()  // unsubscribe (sends an unsub frame when the last listener for a key lea
 
 `on()` requires a configured `ws` transport (throws otherwise).
 
+## Callers — client-side call policy
+
+`sdk.caller(name, options)` returns a **typed `Caller`** whose `call(...args)` is the same as
+`sdk.call(name, ...args)` but wrapped with stateful policy. Each feature is its own wrapper
+function layered around the base call (so their state never tangles), composed in a fixed order:
+
+```
+hooks → cache(read/write + SWR) → dedupe → lastOnly → debounce → rateLimit → retry → call
+```
+
+```ts
+interface Caller<E> {
+  call(...args): Promise<…>   // same arguments/return as sdk.call
+  cancel(): void              // abort in-flight calls + drop pending debounced calls
+  invalidate(): void          // clear this caller's own cached entries
+  readonly pending: number    // calls currently in flight
+}
+```
+
+A read with caching + dedupe, and a search box that debounces and only keeps the latest:
+
+```ts
+const getUser = sdk.caller('getUser', { cache: { ttl: 30_000, tags: ['user'] }, dedupe: true })
+await getUser.call({ id: 'u1' })   // network; cached 30s, shared with concurrent identical calls
+
+const search = sdk.caller('search', { debounce: 250, lastOnly: true })
+search.call({ q })                 // coalesces keystrokes; supersedes older requests (they reject AbortError)
+```
+
+A mutation that **invalidates** other callers' caches by tag (shared across the client's callers):
+
+```ts
+const createUser = sdk.caller('createUser', { invalidates: ['user'], retry: { attempts: 3 } })
+await createUser.call({ name })    // on success, clears every cached entry tagged 'user' (e.g. getUser above)
+```
+
+`CallerOptions` (each is independent; omit to skip that layer):
+
+| Option | Shape | Effect |
+|---|---|---|
+| `cache` | `true` \| `{ ttl?, staleWhileRevalidate?, key?, tags?, store? }` | Cache by the call's data. `key` defaults to stable JSON; `store` is `'memory'` (default) / `'session'` / `'local'` / a custom `KVStore`. `staleWhileRevalidate` serves a stale value while refetching. |
+| `debounce` | `number` \| `{ wait, maxWait?, leading?, accumulate?, spread? }` | Trailing debounce. `accumulate(dataList)` merges queued calls into one; `spread(result, dataList)` fans the result back. |
+| `rateLimit` | `{ limit, window, onLimit? }` | Token bucket. `onLimit`: `'wait'` (default) / `'drop'` / `'throw'` (rejects `CallerRateLimited`). |
+| `retry` | `{ attempts?, base?, factor?, max?, jitter? }` | Exponential-backoff retry on failure. |
+| `lastOnly` | `boolean` | Only the most recent call resolves; older in-flight calls are aborted (reject `AbortError`). |
+| `dedupe` | `boolean` | Concurrent identical calls share one request. |
+| `invalidates` | `string[]` \| `(data, result) => string[]` | Tags to clear (in **all** the client's caches) when this caller runs. `invalidateOn`: `'success'` (default) / `'start'` / `'both'`. |
+| `onStart`/`onSuccess`/`onError`/`onSettled` | callbacks | Lifecycle hooks; pair with `caller.pending`. |
+
+Caches are **shared across a client's callers** (one cache per distinct `store`), so a mutating
+caller's tag invalidation reaches the cached reads of other callers. Set `client({ cache: { max,
+ttl, store } })` for cache defaults. **Streaming** endpoints (item/raw streams) bypass every layer
+— policies apply to unary request/response calls. The cache primitive is also exported standalone
+as `createClientCache(...)`.
+
 ## HTTP vs ws transport selection
 
 - Default transport is `'http'`, unless `prefer: 'ws'` is set (and the endpoint is
