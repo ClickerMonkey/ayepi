@@ -15,7 +15,7 @@ pnpm add @ayepi/work
 ```ts
 import { defineWork, createWork } from '@ayepi/work'
 
-const add = defineWork('add', (i: { a: number; b: number }) => i.a + i.b)
+const add = defineWork('add', (i: { a: number; b: number }, ctx) => ctx.result(i.a + i.b))
 const w = createWork({ work: [add] as const })
 
 const sum = await w.enqueue(add({ a: 1, b: 2 })).result() // 3, typed as number
@@ -24,11 +24,20 @@ await w.stop()
 
 Bare `import` has **no side effects** — the default instance does not auto-start.
 
+## Handlers return a `WorkResult`
+
+A handler **returns a `WorkResult`** describing what it produced:
+
+- **`ctx.result(value, opts?)`** — contribute a value (its own `.result()` and the group). `opts`: `{ final }` locks the group result; `{ append }` accumulates.
+- **`ctx.queue(items, opts?)`** — run sub-work (built `Work`s and/or nested results) in the same group; the work **delegates** (its `.result()` is `void`).
+- **`ctx.void()`** — contribute nothing.
+- **`.next(works, condition?, opts?)`** — a native dependency: queue `works` once the prior items satisfy `condition` (default `'all-success'`).
+
+Each work then carries two inferred types — its *awaited-alone* result `S` (`.result()`) and its *group* contribution `G` (`.group()` / awaiting the handle). So `enqueue(root).group()` resolves to a **precise union from the workflow structure**, not the whole registry.
+
 ## Type safety
 
-`defineWork(name, handler, opts?)` returns a **callable builder** typed by its input and
-output. Pass a `const` tuple of builders to `createWork`, and both `enqueue` forms are
-checked:
+`defineWork(name, handler, opts?)` returns a **callable builder** typed by its input and the `WorkResult` it returns. Pass a `const` tuple to `createWork`, and both `enqueue` forms are checked:
 
 ```ts
 w.enqueue(add({ a: 1, b: 2 }))      // instance form
@@ -36,23 +45,26 @@ w.enqueue('add', { a: 1, b: 2 })    // name form (name ∈ registry, input typed
 add({ a: 1 })                       // ✗ type error: missing `b`
 ```
 
-Awaiting a handle resolves to the **group result** — the union of the registry's non-void
-outputs (`GroupResult<Defs>`). `.result()` resolves this item's own output; `.group()` is
-the explicit group form.
+## Groups & workflows
 
-## Groups & context
-
-A handler receives a `ctx`. `ctx.queue(child(input))` queues child work **into the same
-group** (so awaiting the group waits for the children); `ctx.setResult(value)` records the
-group's result.
+`ctx.queue` composes sub-work into the same group; a returned tree is a workflow whose group
+type is the precise union of its parts. `.next` adds native dependencies, and `ctx.result`
+(with `final`/`append`) shapes the group's value (default: **last contributor to finish**).
 
 ```ts
-const root = defineWork('root', (i: { ids: string[] }, ctx) => {
-  for (const id of i.ids) ctx.queue(process({ id }))
-  ctx.setResult({ queued: i.ids.length })
-})
-const out = await w.enqueue(root({ ids: ['a', 'b'] })) // resolves after both children settle
+const fetch = defineWork('fetch', (i: { id: string }, ctx) => ctx.result(load(i.id)))
+const report = defineWork('report', (_i, ctx) => ctx.result(summary()))
+const root = defineWork('root', (i: { ids: string[] }, ctx) =>
+  ctx.queue(i.ids.map((id) => fetch({ id }))).next([report({})], 'all-success'),
+)
+const out = await w.enqueue(root({ ids: ['a', 'b'] })) // typed: fetch's | report's output
 ```
+
+Per-work `ctx`: `id`, `groupId`, `attempt`, `parent` (who queued it), `dependents` (ids it
+depended on). A handler must **return** every `ctx.queue`/`result`/`void` it creates — an
+un-returned one throws (opt out with `strictReturn: false`). Set `deadline`/`timeout` to make
+an item that doesn't start+finish in time go terminal with an `'expired'` event. `setIdGenerator`
+overrides how work ids are minted.
 
 ## Instance options, retries, delay
 
@@ -199,7 +211,7 @@ This package ships dense, machine-oriented reference docs written for **AI codin
 - [`ayepi-work-ports.md`](./ayepi-work-ports.md)
 - [`ayepi-work.md`](./ayepi-work.md)
 
-They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/work) and are **not** shipped in the npm tarball.
+They ship with this package and also live in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/work).
 
 ## License
 

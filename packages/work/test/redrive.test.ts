@@ -31,7 +31,7 @@ const dlqOf = (bodies: string[]): { q: Queue; acks: string[]; maxes: number[] } 
 describe('DLQ redrive', () => {
   it('transfers dead messages onto the normal queue and reprocesses them when idle', async () => {
     const ran: string[] = [];
-    const job = defineWork('job', (i: { tag: string }) => void ran.push(i.tag));
+    const job = defineWork('job', (i: { tag: string }, ctx) => (ran.push(i.tag), ctx.void()));
     const dlq = dlqOf([
       envBody({ id: 'd1', groupId: 'g1', input: JSON.stringify({ tag: 'a' }), attempt: 5 }),
       envBody({ id: 'd2', groupId: 'g2', input: JSON.stringify({ tag: 'b' }), attempt: 5 }),
@@ -50,7 +50,7 @@ describe('DLQ redrive', () => {
 
   it('drops an unparseable DLQ body instead of looping on it', async () => {
     const dlq = dlqOf(['not json{']);
-    const job = defineWork('job', () => 'ok');
+    const job = defineWork('job', (_i: unknown, ctx) => ctx.result('ok'));
     const w = createWork({ work: [job] as const, queue: memoryQueue(), store: memoryStore(), pubsub: memoryPubSub(), ...fast, dlq: dlq.q });
     try {
       await wait(40);
@@ -62,7 +62,7 @@ describe('DLQ redrive', () => {
 
   it('caps the transfer at redriveCount per idle poll', async () => {
     const dlq = dlqOf([envBody({ id: 'd1', groupId: 'g1' })]);
-    const job = defineWork('job', () => 'ok');
+    const job = defineWork('job', (_i: unknown, ctx) => ctx.result('ok'));
     const w = createWork({ work: [job] as const, queue: memoryQueue(), store: memoryStore(), pubsub: memoryPubSub(), ...fast, dlq: dlq.q, redriveCount: 3 });
     try {
       await wait(40);
@@ -85,7 +85,7 @@ describe('DLQ redrive', () => {
       ack: () => {},
       fail: () => {},
     };
-    const job = defineWork('job', () => 'ok');
+    const job = defineWork('job', (_i: unknown, ctx) => ctx.result('ok'));
     const w = createWork({ work: [job] as const, queue: broken, store: memoryStore(), pubsub: memoryPubSub(), ...fast, dlq: dlq.q, onError: (_e, phase) => phases.push(phase) });
     try {
       await wait(40);
@@ -99,7 +99,7 @@ describe('DLQ redrive', () => {
   it('does not redrive while the normal queue still has work (or when disabled)', async () => {
     const dlq = dlqOf([envBody({ id: 'd1', groupId: 'g1' })]);
     const normal: MemoryQueue = memoryQueue();
-    const job = defineWork('job', (i: { n: number }) => i.n);
+    const job = defineWork('job', (i: { n: number }, ctx) => ctx.result(i.n));
     // redriveCount: 0 disables redrive even though a dlq is set
     const w = createWork({ work: [job] as const, queue: normal, store: memoryStore(), pubsub: memoryPubSub(), ...fast, dlq: dlq.q, redriveCount: 0 });
     try {

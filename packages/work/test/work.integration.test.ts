@@ -8,8 +8,8 @@ describe('@ayepi/work multi-pod (shared backend)', () => {
     const backend = memoryBackend();
     const startedA: string[] = [];
     const startedB: string[] = [];
-    const ping = defineWork('ping', () => 'P');
-    const pong = defineWork('pong', () => 'Q');
+    const ping = defineWork('ping', (_i: unknown, ctx) => ctx.result('P'));
+    const pong = defineWork('pong', (_i: unknown, ctx) => ctx.result('Q'));
     const onStart = (sink: string[]) => (e: WorkEvent) => {
       if (e.kind === 'started') {sink.push(e.type);}
     };
@@ -30,13 +30,14 @@ describe('@ayepi/work multi-pod (shared backend)', () => {
   it('fans work out across two workers and gates a finalizer on completion', async () => {
     const backend = memoryBackend();
     const processed = new Set<number>();
-    const step = defineWork('step', (i: { n: number }) => {
+    const step = defineWork('step', (i: { n: number }, ctx) => {
       processed.add(i.n);
-      return i.n;
+      return ctx.result(i.n);
     });
     let finalized = false;
-    const finalize = defineWork('finalize', () => {
+    const finalize = defineWork('finalize', (_i: unknown, ctx) => {
       finalized = true;
+      return ctx.void();
     });
 
     const a = createWork({ ...backend, work: [step, finalize] as const, ...fast });

@@ -20,7 +20,7 @@
  * @module
  */
 
-import { uuid } from './internal';
+import { genId } from './internal';
 import type { DependencyCondition, Work, WorkHandler, WorkState } from './types';
 
 /** The built-in work type name for a dependency. */
@@ -95,16 +95,16 @@ const toSerialized = (w: Work): SerializedWork => ({ id: w.id, type: w.type, inp
 const rehydrate = (s: SerializedWork): Work => ({ id: s.id, type: s.type, input: s.input }) as unknown as Work; // internal cast: __out is phantom
 
 /** Build a {@link DEPENDENCY_TYPE} work item from a (re-usable) input — a fresh queue id, same key. */
-const buildDependency = (input: DependencyInput): Work<typeof DEPENDENCY_TYPE, void> =>
-  ({ id: uuid(), type: DEPENDENCY_TYPE, input }) as unknown as Work<typeof DEPENDENCY_TYPE, void>; // internal cast: __out is phantom
+const buildDependency = (input: DependencyInput): Work<typeof DEPENDENCY_TYPE, void, void> =>
+  ({ id: genId(), type: DEPENDENCY_TYPE, input }) as unknown as Work<typeof DEPENDENCY_TYPE, void, void>; // internal cast: __out is phantom
 
 /**
  * Build a dependency: when the works it waits `on` satisfy `config`, it queues its
  * `queue` dependents (once). Enqueue it like any work.
  */
-export function dependency(opts: DependencyOptions): Work<typeof DEPENDENCY_TYPE, void> {
+export function dependency(opts: DependencyOptions): Work<typeof DEPENDENCY_TYPE, void, void> {
   return buildDependency({
-    key: uuid(),
+    key: genId(),
     on: opts.on.map(toId),
     queue: opts.queue.map(toSerialized),
     config: opts.config ?? 'all-success',
@@ -119,7 +119,7 @@ export function dependency(opts: DependencyOptions): Work<typeof DEPENDENCY_TYPE
  * (`resolved`) so it neither re-reads settled works nor treats an evicted state as a
  * failure.
  */
-export const dependencyHandler: WorkHandler<DependencyInput, void> = async (input, ctx) => {
+export const dependencyHandler: WorkHandler<DependencyInput, void, unknown> = async (input, ctx) => {
   const resolved: Record<string, TerminalStatus> = { ...input.resolved };
   const unknownIds = input.on.filter((id) => !(id in resolved));
   const fresh = await ctx.states(unknownIds);
@@ -131,11 +131,11 @@ export const dependencyHandler: WorkHandler<DependencyInput, void> = async (inpu
   const states: (WorkState | undefined)[] = input.on.map((id) => (resolved[id] ? ({ status: resolved[id] } as WorkState) : freshById.get(id)));
 
   if (conditionMet(input.config, states)) {
-    if (await ctx.claim(`dep:${input.key}:fired`)) {ctx.queue(input.queue.map(rehydrate));}
-    return;
+    // fire exactly once across the fleet; the engine tags the queued works' `dependents` with `on`
+    return (await ctx.claim(`dep:${input.key}:fired`)) ? ctx.queue(input.queue.map(rehydrate)) : ctx.void();
   }
   if (input.deadline !== undefined && Date.now() >= input.deadline) {
     throw new Error(`dependency: timed out waiting for [${input.on.join(', ')}]`);
   }
-  ctx.queue(buildDependency({ ...input, resolved }), { delay: input.poll }); // poll again later, without blocking a slot
+  return ctx.queue(buildDependency({ ...input, resolved }), { delay: input.poll }); // poll again later, without blocking a slot
 };

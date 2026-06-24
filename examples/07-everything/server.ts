@@ -45,7 +45,7 @@ let emit: EmitFn<typeof api> | undefined;
  * progress is visible. Each slice emits a `jobProgress` event for the job's id. The work
  * handler runs on the engine (no request context), so it emits through the server directly.
  */
-const compute = defineWork('compute', async (input: { jobId: string; n: number }) => {
+const compute = defineWork('compute', async (input: { jobId: string; n: number }, ctx) => {
   const rec = jobs.get(input.jobId);
   let sum = 0;
   for (let i = 1; i <= input.n; i++) {
@@ -62,7 +62,7 @@ const compute = defineWork('compute', async (input: { jobId: string; n: number }
     emit?.('jobProgress', { jobId: input.jobId }, { pct, result: done ? sum : null });
     await new Promise((r) => setTimeout(r, 250));
   }
-  return sum;
+  return ctx.result(sum);
 });
 
 /** The work engine — bundled in-memory backend, started/stopped by updown (not on import). */

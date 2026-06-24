@@ -3,17 +3,19 @@
  *
  * Defining a work type with {@link defineWork} yields a **callable builder**: call it
  * with the work's exact input and you get a type-checked, queueable {@link Work} (with
- * a build-time id) that also carries its output type. {@link createWork} takes a
- * `const` tuple of builders and produces a {@link WorkSystem} whose `enqueue` is fully
- * checked — by instance (`enqueue(add({ a, b }))`) or by name (`enqueue('add', { a, b })`).
+ * a build-time id). A handler **returns a {@link WorkResult}** — `ctx.result(value)`,
+ * `ctx.queue(...)`, `ctx.void()`, or a `.next(...)` dependency chain — so each work carries
+ * two inferred types: its *awaited-alone* result `S` and its *group* contribution `G`.
+ * {@link createWork} takes a `const` tuple of builders and produces a {@link WorkSystem} whose
+ * `enqueue` is fully checked — by instance or by name.
  *
- * The **group result type** is the union of every registered work's non-void output
- * ({@link GroupResult}). All durations are **milliseconds**.
+ * `enqueue(root).group()` resolves to `root`'s `G` — a **precise union from the workflow
+ * structure**, not the whole registry. All durations are **milliseconds**.
  *
  * @module
  */
 
-import { uuid, type Clock, type LogWith } from './internal';
+import { genId, type Clock, type LogWith } from './internal';
 import type { JsonCodec } from './json';
 import type { Backend, Queue } from './ports';
 import type { Metrics, StatValue } from '@ayepi/core/stats';
@@ -26,18 +28,63 @@ import type { MaybePromise } from '@ayepi/core';
 /**
  * A queueable, type-carrying unit of work produced by a {@link WorkBuilder}. Its `id`
  * is assigned at build time (so you can reference it before queueing — e.g. to depend
- * on it). `__out` is a phantom: it never exists at runtime, it only threads the output
- * type through `enqueue`.
+ * on it). It carries **two** phantom types: `S` — what `.result()` resolves to when this
+ * item is awaited alone — and `G` — what it contributes to the **group** when group-awaited
+ * (its own value plus everything it queues, transitively). Phantoms never exist at runtime.
  */
-export interface Work<Name extends string = string, O = unknown> {
+export interface Work<Name extends string = string, S = unknown, G = unknown> {
   /** Stable id, assigned when the instance is built. */
   readonly id: string;
   /** The work type name (the registry key). */
   readonly type: Name;
   /** The (already type-checked) input payload. */
   readonly input: unknown;
-  /** Phantom output-type carrier — never present at runtime. */
-  readonly __out: O;
+  /** Phantom: the *awaited-alone* result type. */
+  readonly __self: S;
+  /** Phantom: the *group-awaited* contribution type. */
+  readonly __group: G;
+}
+
+/** Brand for {@link WorkResult} — also makes the result distinguishable from a raw value at runtime. */
+declare const WORK_RESULT: unique symbol;
+
+/** An item that contributes to a group: a built {@link Work} or a {@link WorkResult}. */
+export type GroupItem = Work<string, unknown, unknown> | WorkResult<unknown, unknown>;
+
+/** The group contribution `G` of one {@link GroupItem}. */
+export type GroupOfItem<X> = X extends Work<string, unknown, infer G> ? G : X extends WorkResult<unknown, infer G> ? G : never;
+/** The group contribution of one item or a tuple/array of items. */
+export type GroupOf<Is> = Is extends readonly GroupItem[] ? GroupOfItem<Is[number]> : GroupOfItem<Is>;
+
+/**
+ * What a handler **returns**: an instruction the system carries out, typed by its *awaited-alone*
+ * result `S` and its *group* contribution `G`. Built by {@link WorkContext.result} (a value),
+ * {@link WorkContext.queue} (run sub-works), or {@link WorkContext.void} (nothing). Chain native
+ * dependencies with {@link next}.
+ *
+ * The chain method is **`next`**, not `then` — a `then` member would make this a *thenable*, and the
+ * engine's `Promise.resolve(...)` of the handler's return would try to adopt/await it.
+ */
+export interface WorkResult<S, G> {
+  /** Phantom brand (type-only; the runtime object carries a separate symbol). */
+  readonly [WORK_RESULT]: true;
+  /** Phantom: the *awaited-alone* result type. */
+  readonly __self: S;
+  /** Phantom: the *group* contribution type. */
+  readonly __group: G;
+  /**
+   * Native dependency: once the works this result queued satisfy `condition` (default `'all-success'`),
+   * queue `next`. Returns a result whose group widens by `next`'s contribution.
+   */
+  next<const Ns extends GroupItem | readonly GroupItem[]>(next: Ns, condition?: DependencyCondition, options?: WorkInstanceOptions): WorkResult<S, G | GroupOf<Ns>>;
+}
+
+/** Options for {@link WorkContext.result}. */
+export interface ResultOptions<R> {
+  /** Lock the group result to this value — later contributors can't overwrite it. */
+  readonly final?: boolean;
+  /** Accumulate instead of overwrite: fold this work's value into the existing group result. */
+  readonly append?: (existing: R | undefined) => R;
 }
 
 /** The execution context handed to a {@link WorkHandler}. */
@@ -48,19 +95,24 @@ export interface WorkContext {
   readonly groupId: string;
   /** Delivery attempt (1 = first try; higher after a retry). */
   readonly attempt: number;
-  /** Queue child work **into the same group**; returns the child id(s). */
-  queue(work: Work, options?: WorkInstanceOptions): string;
-  queue(works: readonly Work[], options?: WorkInstanceOptions): string[];
-  /** Set the group's result (last-writer-wins) — what a top-level `await enqueue(...)` resolves to. */
-  setResult(result: unknown): void;
+  /** The id of the work that queued this one (undefined for a top-level `enqueue`). */
+  readonly parent?: string;
+  /** When this work was queued by a fired dependency, the ids it depended on. */
+  readonly dependents?: readonly string[];
+  /** Contribute a **value** to the group (and to this item's own `.result()`). */
+  result<R>(value: R, options?: ResultOptions<R>): WorkResult<R, R>;
+  /** Queue sub-work into the same group (works and/or nested results); this item delegates (`.result()` = void). */
+  queue<const Is extends GroupItem | readonly GroupItem[]>(items: Is, options?: WorkInstanceOptions): WorkResult<void, GroupOf<Is>>;
+  /** Contribute nothing. */
+  void(): WorkResult<void, void>;
   /** Read the current {@link WorkState} of other work items (for dependency-style coordination). */
   states(ids: readonly string[]): Promise<(WorkState | undefined)[]>;
   /** Win a one-time distributed claim for `key` (returns `true` once across the fleet). */
   claim(key: string): Promise<boolean>;
 }
 
-/** A work handler: maps typed input (+ context) to typed output. */
-export type WorkHandler<I, O> = (input: I, ctx: WorkContext) => O | Promise<O>;
+/** A work handler: maps typed input (+ context) to a {@link WorkResult} describing what it produced. */
+export type WorkHandler<I, S, G> = (input: I, ctx: WorkContext) => WorkResult<S, G> | Promise<WorkResult<S, G>>;
 
 /**
  * Per-instance options resolved at enqueue time and **serialized with the instance**.
@@ -82,6 +134,13 @@ export interface WorkInstanceOptions {
   readonly priority?: number;
   /** Fairness group label — consumed by `balancedDoer`. */
   readonly group?: string;
+  /**
+   * Absolute time (epoch ms) by which the item must have **started and finished**. Past it, the item
+   * is no longer retried — it goes terminal and an `'expired'` event fires. Wins over {@link timeout}.
+   */
+  readonly deadline?: number;
+  /** Relative deadline (ms from enqueue) — `deadline = queueAt + timeout`. See {@link deadline}. */
+  readonly timeout?: number;
   /** Skip the durable queue and run this item directly via the doer (in-process; see {@link WorkOptions.skipQueue}). */
   readonly skipQueue?: boolean;
 }
@@ -156,6 +215,14 @@ export interface WorkOptions<I> {
   readonly onFailure?: FailureClassifier;
   /** Derive `logWith` context from this type's input (merged over the global hook). */
   readonly logContext?: (input: I) => object;
+  /** Default relative deadline (ms from enqueue) for this type — see {@link WorkInstanceOptions.timeout}. */
+  readonly timeout?: number;
+  /**
+   * Require every `ctx.queue`/`ctx.result`/`.next` to be **returned** from the handler (so the group
+   * type reflects it) — an un-returned instruction throws. Overrides {@link WorkSystemOptions.strictReturn}.
+   * Set `false` to allow detached `ctx.queue` (the work still runs, but its group type won't include it).
+   */
+  readonly strictReturn?: boolean;
   /**
    * Run this type **without the durable queue** — straight to the doer, in-process.
    * Retries, grouping, priority, events, and results still work; there is no queue,
@@ -165,67 +232,73 @@ export interface WorkOptions<I> {
   readonly skipQueue?: boolean;
 }
 
-/** The full definition behind a {@link WorkBuilder}. */
-export interface WorkDefinition<I, O> {
+/** The full definition behind a {@link WorkBuilder}. `S`/`G` are the work's self/group result types. */
+export interface WorkDefinition<I, S, G> {
   readonly name: string;
-  readonly handler: WorkHandler<I, O>;
+  readonly handler: WorkHandler<I, S, G>;
   readonly options: WorkOptions<I>;
-  /** Present for batched work types (see {@link defineBatchWork}). */
-  readonly batch?: BatchConfig<I, O>;
+  /** Present for batched work types (see {@link defineBatchWork}); a batch produces a value per item. */
+  readonly batch?: BatchConfig<I, S>;
 }
 
 /**
  * A callable work builder. Invoke it with the work's input to mint a queueable
  * {@link Work} (with a fresh id); it also exposes its `type` and underlying `def`.
  */
-export interface WorkBuilder<Name extends string, I, O> {
+export interface WorkBuilder<Name extends string, I, S, G> {
   /** Build a type-checked, queueable instance from this work's input. */
-  (input: I): Work<Name, O>;
+  (input: I): Work<Name, S, G>;
   /** The work type name. */
   readonly type: Name;
   /** The underlying definition (handler + options). */
-  readonly def: WorkDefinition<I, O>;
+  readonly def: WorkDefinition<I, S, G>;
 }
 
 /** The loose base every {@link WorkBuilder} satisfies regardless of its input type. */
-export type AnyWorkBuilder = WorkBuilder<string, never, unknown>;
+export type AnyWorkBuilder = WorkBuilder<string, never, unknown, unknown>;
 
-const build = <Name extends string, I, O>(name: Name, input: I): Work<Name, O> =>
-  ({ id: uuid(), type: name, input }) as unknown as Work<Name, O>; // internal cast: __out is phantom (type-only)
+const build = <Name extends string, I, S, G>(name: Name, input: I): Work<Name, S, G> =>
+  ({ id: genId(), type: name, input }) as unknown as Work<Name, S, G>; // internal cast: __self/__group are phantom (type-only)
 
 /**
- * Define a work type. Returns a {@link WorkBuilder} — a function that builds queueable
- * instances — typed by its input `I` and output `O`.
+ * Define a work type. The handler **returns a {@link WorkResult}** — `ctx.result(value)`,
+ * `ctx.queue(...)`, `ctx.void()`, or a `.next(...)` chain — and its `S`/`G` types are inferred
+ * from that return: `S` is what `.result()` resolves to alone, `G` what it contributes to the group.
  */
-export function defineWork<Name extends string, I, O>(name: Name, handler: WorkHandler<I, O>, opts: WorkOptions<I> = {}): WorkBuilder<Name, I, O> {
-  const def: WorkDefinition<I, O> = { name, handler, options: opts };
-  return Object.assign((input: I) => build<Name, I, O>(name, input), { type: name, def });
+export function defineWork<Name extends string, I, S, G>(name: Name, handler: WorkHandler<I, S, G>, opts: WorkOptions<I> = {}): WorkBuilder<Name, I, S, NonVoidUnion<G>> {
+  const def: WorkDefinition<I, S, NonVoidUnion<G>> = { name, handler: handler as WorkHandler<I, S, NonVoidUnion<G>>, options: opts };
+  return Object.assign((input: I) => build<Name, I, S, NonVoidUnion<G>>(name, input), { type: name, def });
 }
 
 /**
- * Define a **batched** work type. Items still enqueue, retry, prioritize, and join
- * groups individually, but execute together via {@link BatchConfig.run} once `size`
- * accumulate or `maxWait` ms elapse — so each `.result()` resolves to its aligned
- * output. The per-type {@link WorkOptions.doer} governs how many *batches* run at once.
+ * Define a **batched** work type. Items still enqueue, retry, prioritize, and join groups
+ * individually, but execute together via {@link BatchConfig.run} once `size` accumulate or `maxWait`
+ * ms elapse — so each `.result()` resolves to its aligned output `O` (which is also its group
+ * contribution). The per-type {@link WorkOptions.doer} governs how many *batches* run at once.
  */
-export function defineBatchWork<Name extends string, I, O>(name: Name, config: BatchConfig<I, O> & WorkOptions<I>): WorkBuilder<Name, I, O> {
+export function defineBatchWork<Name extends string, I, O>(name: Name, config: BatchConfig<I, O> & WorkOptions<I>): WorkBuilder<Name, I, O, NonVoidUnion<O>> {
   const { size, maxWait, run, ...options } = config;
   const batch: BatchConfig<I, O> = { size, maxWait, run };
-  const handler: WorkHandler<I, O> = async (input) => (await run([input]))[0] as O; // single-item fallback if ever run un-batched
-  const def: WorkDefinition<I, O> = { name, handler, options, batch };
-  return Object.assign((input: I) => build<Name, I, O>(name, input), { type: name, def });
+  // single-item fallback if ever run un-batched: produce the value as a result contribution
+  const handler: WorkHandler<I, O, O> = async (input, ctx) => ctx.result((await run([input]))[0] as O);
+  const def: WorkDefinition<I, O, NonVoidUnion<O>> = { name, handler: handler as WorkHandler<I, O, NonVoidUnion<O>>, options, batch };
+  return Object.assign((input: I) => build<Name, I, O, NonVoidUnion<O>>(name, input), { type: name, def });
 }
 
 /* ---- type helpers over a registry ---- */
 
 /** The input type a builder accepts. */
 export type InputOf<B> = B extends (input: infer I) => unknown ? I : never;
-/** The output type a builder's instances carry. */
-export type OutputOf<B> = B extends (...args: never[]) => Work<string, infer O> ? O : never;
+/** The *awaited-alone* result type a builder's instances carry. */
+export type SelfOf<B> = B extends (...args: never[]) => Work<string, infer S, unknown> ? S : never;
+/** The *group* contribution type a builder's instances carry. */
+export type GroupOfBuilder<B> = B extends (...args: never[]) => Work<string, unknown, infer G> ? G : never;
 /** The name of a builder. */
 export type NameOf<B> = B extends { readonly type: infer N extends string } ? N : never;
-/** The output type carried by a {@link Work}. */
-export type OutputOfWork<W> = W extends Work<string, infer O> ? O : unknown;
+/** The *awaited-alone* result type carried by a {@link Work}. */
+export type SelfOfWork<W> = W extends Work<string, infer S, unknown> ? S : unknown;
+/** The *group* contribution type carried by a {@link Work}. */
+export type GroupOfWork<W> = W extends Work<string, unknown, infer G> ? G : unknown;
 
 /** Drop `void`/`undefined` from a union (work that returns "nothing"). */
 export type NonVoidUnion<U> = Exclude<U, void | undefined>;
@@ -236,20 +309,16 @@ export type RegistryNames<Defs extends readonly AnyWorkBuilder[]> = NameOf<Defs[
 export type BuilderForName<Defs extends readonly AnyWorkBuilder[], K extends string> = Extract<Defs[number], { readonly type: K }>;
 /** The input type of the registry's work named `K`. */
 export type InputForName<Defs extends readonly AnyWorkBuilder[], K extends string> = InputOf<BuilderForName<Defs, K>>;
-/** The output type of the registry's work named `K`. */
-export type OutputForName<Defs extends readonly AnyWorkBuilder[], K extends string> = OutputOf<BuilderForName<Defs, K>>;
-
-/**
- * The group's final result type: the union of every registered work's non-void
- * output. The value a top-level `await enqueue(...)` resolves to.
- */
-export type GroupResult<Defs extends readonly AnyWorkBuilder[]> = NonVoidUnion<OutputOf<Defs[number]>>;
+/** The *awaited-alone* result type of the registry's work named `K`. */
+export type SelfForName<Defs extends readonly AnyWorkBuilder[], K extends string> = SelfOf<BuilderForName<Defs, K>>;
+/** The *group* contribution type of the registry's work named `K`. */
+export type GroupForName<Defs extends readonly AnyWorkBuilder[], K extends string> = GroupOfBuilder<BuilderForName<Defs, K>>;
 
 /* ---- handles ---- */
 
 /**
- * The thenable returned by `enqueue`. **Awaiting it resolves to the group result**
- * ({@link GroupResult}); use {@link result} for this item's own output and
+ * The thenable returned by `enqueue`. **Awaiting it resolves to the group result** (the
+ * root work's `Group` contribution); use {@link result} for this item's own output and
  * {@link group} for the explicit group form.
  */
 export interface WorkHandle<Self, Group> extends PromiseLike<Group> {
@@ -313,11 +382,12 @@ export interface ActiveWork {
  * attempt count. (An item put back merely because it arrived before its `startAt` is silent.)
  */
 export type WorkEvent =
-  | { readonly kind: 'queued'; readonly id: string; readonly type: string; readonly groupId: string; readonly at: number }
-  | { readonly kind: 'started'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly at: number }
+  | { readonly kind: 'queued'; readonly id: string; readonly type: string; readonly groupId: string; readonly parent?: string; readonly dependents?: readonly string[]; readonly at: number }
+  | { readonly kind: 'started'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly parent?: string; readonly dependents?: readonly string[]; readonly at: number }
   | { readonly kind: 'deferred'; readonly id: string; readonly type: string; readonly groupId: string; readonly runAt: number; readonly at: number }
-  | { readonly kind: 'succeeded'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly result: unknown; readonly at: number }
-  | { readonly kind: 'failed'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly error: string; readonly willRetry: boolean; readonly at: number }
+  | { readonly kind: 'succeeded'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly result: unknown; readonly parent?: string; readonly dependents?: readonly string[]; readonly at: number }
+  | { readonly kind: 'failed'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly error: string; readonly willRetry: boolean; readonly parent?: string; readonly dependents?: readonly string[]; readonly at: number }
+  | { readonly kind: 'expired'; readonly id: string; readonly type: string; readonly groupId: string; readonly deadline: number; readonly parent?: string; readonly dependents?: readonly string[]; readonly at: number }
   | { readonly kind: 'group-done'; readonly groupId: string; readonly result: unknown; readonly at: number };
 
 /** What {@link WorkSystemOptions.accept} receives to decide whether *this* instance should run an item. */
@@ -466,6 +536,17 @@ export interface WorkSystemOptions {
    * Exposed back as {@link WorkSystem.metrics}.
    */
   readonly metrics?: Metrics;
+  /**
+   * Require a handler to **return** every `ctx.queue`/`ctx.result`/`.next` it creates (so the work's
+   * group type reflects it); an un-returned instruction throws (default `true`). Per-type
+   * {@link WorkOptions.strictReturn} overrides. Turn off if you don't care about precise group typing.
+   */
+  readonly strictReturn?: boolean;
+  /**
+   * Generate the ids the **engine** mints (group ids, name-form item ids, dependency keys, re-pushes).
+   * Defaults to the process generator (see `setIdGenerator`, which also governs build-time work ids).
+   */
+  readonly generateId?: () => string;
   /** Start the worker loop immediately (default true). */
   readonly autoStart?: boolean;
   /** Clock injection for tests (default `Date.now`). */
@@ -476,10 +557,10 @@ export interface WorkSystemOptions {
 
 /** The work system returned by `createWork`. */
 export interface WorkSystem<Defs extends readonly AnyWorkBuilder[]> {
-  /** Enqueue a built instance; await the handle for the group result, `.result()` for its own. */
-  enqueue<W extends Work>(work: W, options?: WorkInstanceOptions): WorkHandle<OutputOfWork<W>, GroupResult<Defs>>;
+  /** Enqueue a built instance; await the handle for the **group** result, `.result()` for its own. */
+  enqueue<W extends Work>(work: W, options?: WorkInstanceOptions): WorkHandle<SelfOfWork<W>, GroupOfWork<W>>;
   /** Enqueue by registered name with a type-checked input. */
-  enqueue<K extends RegistryNames<Defs>>(name: K, input: InputForName<Defs, K>, options?: WorkInstanceOptions): WorkHandle<OutputForName<Defs, K>, GroupResult<Defs>>;
+  enqueue<K extends RegistryNames<Defs>>(name: K, input: InputForName<Defs, K>, options?: WorkInstanceOptions): WorkHandle<SelfForName<Defs, K>, GroupForName<Defs, K>>;
   /** Register a recurring schedule; returns a cancel function. */
   schedule(config: ScheduleConfig): () => void;
   /** Start the worker + scheduler loops (idempotent). */

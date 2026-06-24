@@ -35,6 +35,7 @@ import type { WorkState } from './types';
 /* ---- core ---- */
 export { createWork } from './engine';
 export { defineWork, defineBatchWork } from './types';
+export { setIdGenerator } from './internal';
 export { WorkDelayError } from './errors';
 export type { WorkDelaySpec } from './errors';
 export { RetryAbort } from '@ayepi/core/retry';
@@ -42,6 +43,9 @@ export type {
   WorkSystem,
   WorkSystemOptions,
   Work,
+  WorkResult,
+  GroupItem,
+  ResultOptions,
   WorkBuilder,
   AnyWorkBuilder,
   WorkHandler,
@@ -64,15 +68,19 @@ export type {
   DependencyCondition,
   ScheduleConfig,
   InputOf,
-  OutputOf,
   NameOf,
-  OutputOfWork,
+  SelfOf,
+  GroupOf,
+  GroupOfItem,
+  GroupOfBuilder,
+  SelfOfWork,
+  GroupOfWork,
   NonVoidUnion,
   RegistryNames,
   BuilderForName,
   InputForName,
-  OutputForName,
-  GroupResult,
+  SelfForName,
+  GroupForName,
 } from './types';
 
 /* ---- per-type stats (metric names + re-exported core metrics primitive) ---- */

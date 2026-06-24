@@ -18,9 +18,9 @@ import { backoff, getDefaultRetryOptions, retry, RetryAbort, type RetryOptions }
 import { defaultCodec, type JsonCodec } from './json';
 import { memoryBackend } from './memory';
 import type { Backend, PulledWork, Queue } from './ports';
-import { identityLogWith, merge, sleep, uuid } from './internal';
+import { genId, identityLogWith, merge, sleep } from './internal';
 import { WorkDelayError } from './errors';
-import { DEPENDENCY_TYPE, dependencyHandler } from './dependency';
+import { DEPENDENCY_TYPE, dependencyHandler, dependency } from './dependency';
 import { startSchedule } from './schedule';
 import { createWorkStats } from './stats';
 import { defineWork } from './types';
@@ -28,6 +28,7 @@ import type { StatValue } from '@ayepi/core/stats';
 import type {
   ActiveWork,
   AnyWorkBuilder,
+  DependencyCondition,
   FailureDecision,
   ScheduleConfig,
   Work,
@@ -86,6 +87,12 @@ interface Envelope {
   readonly priority: number;
   readonly group?: string;
   readonly retry: RetryOptions;
+  /** Absolute deadline (epoch ms); past it the item expires instead of retrying. */
+  readonly deadline?: number;
+  /** The id of the work that queued this one (undefined at the top level). */
+  readonly parent?: string;
+  /** When queued by a fired dependency, the ids this work depended on. */
+  readonly dependents?: readonly string[];
 }
 
 /** Resolved per-instance options. */
@@ -96,11 +103,15 @@ interface Resolved {
   readonly retry: RetryOptions;
   readonly priority: number;
   readonly group?: string;
+  /** Absolute deadline (epoch ms), from `deadline`/`timeout`. */
+  readonly deadline?: number;
   readonly skipQueue: boolean;
 }
 
 const unref = (t: { unref?: () => void }): void => void t.unref?.();
 const errString = (err: unknown): string => (err instanceof Error ? `${err.name}: ${err.message}` : String(err));
+/** Brand stamped on a runtime `WorkResult` node — distinguishes a handler instruction from a raw value. */
+const WR_BRAND: unique symbol = Symbol.for('ayepi.work.result');
 
 /**
  * Create a work system. Zero-config (`createWork()`) uses the bundled in-memory backend
@@ -125,6 +136,8 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   const logWith = opts.logWith ?? identityLogWith;
   const now = opts.now ?? Date.now;
   const random = opts.random ?? Math.random;
+  const newId = opts.generateId ?? genId; // engine-minted ids (groups, name-form, dependency keys)
+  const strictReturnDefault = opts.strictReturn ?? true;
   const attemptsOf = (r: RetryOptions): number => r.attempts ?? getDefaultRetryOptions().attempts ?? 1;
 
   const stats = createWorkStats(opts.metrics);
@@ -203,11 +216,14 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   const resolveOptions = (type: string, input: unknown, qOpts?: WorkInstanceOptions): Resolved => {
     const tOpts = registry.get(type)?.def.options;
     const computed = tOpts?.options?.(input as never) ?? {};
+    const timeout = qOpts?.timeout ?? computed.timeout ?? tOpts?.timeout;
     return {
       delay: qOpts?.delay ?? computed.delay ?? 0,
       runAt: qOpts?.runAt ?? computed.runAt, // absolute schedule wins over delay (resolved into startAt at submit)
       priority: qOpts?.priority ?? computed.priority ?? tOpts?.priority ?? 0,
       group: qOpts?.group ?? computed.group ?? tOpts?.group,
+      // absolute deadline: explicit wins over a relative timeout (resolved against now ≈ queueAt)
+      deadline: qOpts?.deadline ?? computed.deadline ?? (timeout !== undefined ? now() + timeout : undefined),
       // global retry defaults (incl. setDefaultRetryOptions) < system < type < computed < queue-time
       retry: { ...getDefaultRetryOptions(), ...opts.retry, ...tOpts?.retry, ...computed.retry, ...qOpts?.retry },
       skipQueue: qOpts?.skipQueue ?? computed.skipQueue ?? tOpts?.skipQueue ?? false,
@@ -262,28 +278,67 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     maybeUnhandled(groupId);
   };
 
-  /* ---- work context (shared shape; queued vs local supply the callbacks) ---- */
-  interface ContextImpl {
+  /* ---- WorkResult instructions: lazy nodes built by a handler's ctx, applied after it returns ---- */
+  type WRItem = Work | WRNode;
+  type WRData =
+    | { readonly kind: 'void' }
+    | { readonly kind: 'result'; readonly value: unknown; readonly final: boolean; readonly append?: (existing: unknown) => unknown }
+    | { readonly kind: 'queue'; readonly items: readonly WRItem[]; readonly options?: WorkInstanceOptions; readonly chains: WRChain[]; frontier: readonly WRItem[] };
+  interface WRChain {
+    readonly on: readonly WRItem[];
+    readonly queue: readonly Work[];
+    readonly condition: DependencyCondition;
+    readonly options?: WorkInstanceOptions;
+  }
+  interface WRNode {
+    readonly [WR_BRAND]: true;
+    readonly data: WRData;
+    next(next: Work | readonly Work[], condition?: DependencyCondition, options?: WorkInstanceOptions): WRNode;
+  }
+  const isWR = (x: unknown): x is WRNode => typeof x === 'object' && x !== null && (x as Record<symbol, unknown>)[WR_BRAND] === true;
+  const toItems = (x: WRItem | readonly WRItem[]): WRItem[] => (Array.isArray(x) ? [...(x as readonly WRItem[])] : [x as WRItem]);
+  const makeNode = (data: WRData): WRNode => {
+    const node: WRNode = {
+      [WR_BRAND]: true,
+      data,
+      next(nextItems, condition = 'all-success', options) {
+        if (data.kind !== 'queue') {throw new Error('.next() is only valid on ctx.queue(...)');}
+        const q = toItems(nextItems as WRItem | readonly WRItem[]) as Work[];
+        data.chains.push({ on: data.frontier, queue: q, condition, options });
+        data.frontier = q;
+        return node; // mutate-and-return: one registered node per chain
+      },
+    };
+    return node;
+  };
+  /** Collect the Work ids to wait on within items (recursing into nested `queue` nodes). */
+  const workIdsOf = (items: readonly WRItem[]): string[] => items.flatMap((it) => (isWR(it) ? (it.data.kind === 'queue' ? workIdsOf(it.data.items) : []) : [it.id]));
+
+  interface ExecMeta {
     readonly id: string;
     readonly groupId: string;
     readonly attempt: number;
-    enqueueOne(work: Work, options?: WorkInstanceOptions): string;
-    setResult(result: unknown): void;
-    states(ids: readonly string[]): Promise<(WorkState | undefined)[]>;
-    claim(key: string): Promise<boolean>;
+    readonly parent?: string;
+    readonly dependents?: readonly string[];
   }
-  const makeContext = (impl: ContextImpl): WorkContext => {
-    const queue = (works: Work | readonly Work[], options?: WorkInstanceOptions): string | string[] =>
-      Array.isArray(works) ? works.map((w) => impl.enqueueOne(w, options)) : impl.enqueueOne(works as Work, options);
-    return {
-      id: impl.id,
-      groupId: impl.groupId,
-      attempt: impl.attempt,
-      queue: queue as WorkContext['queue'], // internal cast: single/array overload behind one impl
-      setResult: impl.setResult,
-      states: impl.states,
-      claim: impl.claim,
+  const makeContext = (meta: ExecMeta, created: Set<WRNode>): WorkContext => {
+    const reg = (n: WRNode): WRNode => (created.add(n), n);
+    const ctx = {
+      id: meta.id,
+      groupId: meta.groupId,
+      attempt: meta.attempt,
+      parent: meta.parent,
+      dependents: meta.dependents,
+      result: (value: unknown, options?: { final?: boolean; append?: (existing: unknown) => unknown }) => reg(makeNode({ kind: 'result', value, final: !!options?.final, append: options?.append })),
+      queue: (items: WRItem | readonly WRItem[], options?: WorkInstanceOptions) => {
+        const arr = toItems(items);
+        return reg(makeNode({ kind: 'queue', items: arr, options, chains: [], frontier: arr }));
+      },
+      void: () => reg(makeNode({ kind: 'void' })),
+      states: storeStates,
+      claim: storeClaim,
     };
+    return ctx as unknown as WorkContext; // internal cast: loose node-builders behind the typed WorkContext
   };
   const storeStates = (ids: readonly string[]): Promise<(WorkState | undefined)[]> => Promise.all(ids.map(readState));
   const storeClaim = (key: string): Promise<boolean> => Promise.resolve(store.setIfNotExists(k(key), '1', RESULT_TTL));
@@ -294,22 +349,25 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   /** Resolve when a deferred/scheduled item should next run (absolute epoch ms). */
   const resolveRunAt = (when: { runAt?: number; delay?: number }): number => when.runAt ?? now() + (when.delay ?? 0);
 
-  const submitQueued = (id: string, type: string, input: unknown, groupId: string, ro: Resolved): Promise<void> => {
+  const submitQueued = (id: string, type: string, input: unknown, groupId: string, ro: Resolved, meta?: { parent?: string; dependents?: readonly string[] }): Promise<void> => {
     const queueAt = now();
     const startAt = ro.runAt ?? queueAt + ro.delay; // absolute schedule, else queueAt + delay
     return (async () => {
       await groupIncr(groupId, +1); // acquire a group hold (released when the item later settles)
       try {
         await setState({ id, type, status: 'pending', attempt: 1, queueAt, startAt, priority: ro.priority, group: ro.group }, groupId);
-        await pushEnvelope({ id, type, groupId, input: codecFor(type).stringify(input), queueAt, startAt, attempt: 1, priority: ro.priority, group: ro.group, retry: ro.retry }, Math.max(0, startAt - queueAt));
+        await pushEnvelope({ id, type, groupId, input: codecFor(type).stringify(input), queueAt, startAt, attempt: 1, priority: ro.priority, group: ro.group, retry: ro.retry, deadline: ro.deadline, parent: meta?.parent, dependents: meta?.dependents }, Math.max(0, startAt - queueAt));
       } catch (err) {
         await undoHold(groupId); // the item never made it onto the queue → release the hold so the group can still settle
         throw err;
       }
       stats.queued(type, queueAt);
-      emit({ kind: 'queued', id, type, groupId, at: queueAt });
+      emit({ kind: 'queued', id, type, groupId, parent: meta?.parent, dependents: meta?.dependents, at: queueAt });
     })();
   };
+  /** Submit a built {@link Work} (used by the result-apply walk), carrying its parent/dependents metadata. */
+  const submitWork = (work: Work, groupId: string, options?: WorkInstanceOptions, meta?: { parent?: string; dependents?: readonly string[] }): Promise<void> =>
+    submitQueued(work.id, work.type, work.input, groupId, resolveOptions(work.type, work.input, options), meta);
 
   /** Re-enter the queue for a retry: a fresh delivery with `attempt + 1` and a recomputed `startAt`. */
   const rePush = async (env: Envelope, delay: number): Promise<void> => {
@@ -321,11 +379,11 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
 
   const enqueueImpl = (a: Work | string, b?: unknown, c?: unknown): WorkHandle<unknown, unknown> => {
     const fromName = typeof a === 'string';
-    const id = fromName ? uuid() : (a as Work).id;
+    const id = fromName ? newId() : (a as Work).id;
     const type = fromName ? a : (a as Work).type;
     const input = fromName ? b : (a as Work).input;
     const qOpts = (fromName ? c : b) as WorkInstanceOptions | undefined;
-    const groupId = uuid();
+    const groupId = newId();
     const ro = resolveOptions(type, input, qOpts);
     const ready = ro.skipQueue ? runImmediate(id, type, input, groupId, ro) : submitQueued(id, type, input, groupId, ro);
     return makeHandle(id, type, groupId, ready);
@@ -549,7 +607,26 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
       await port(() => Promise.resolve(q.ack(p)));
     }
     notify({ kind: 'done', id: env.id, groupId: env.groupId, error }); // detached wake
-    emit({ kind: 'failed', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, error, willRetry: false, at });
+    emit({ kind: 'failed', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, error, willRetry: false, parent: env.parent, dependents: env.dependents, at });
+    await settleGroup(env.groupId);
+  };
+
+  /** Whether an item is past its deadline (so it should expire rather than run or retry). */
+  const expired = (env: Envelope): boolean => env.deadline !== undefined && now() > env.deadline;
+
+  /** Terminal expiry: like a dead-letter, but emits `'expired'` (the item didn't start+finish by its deadline). */
+  const expireItem = async (p: PulledWork | null, env: Envelope, q: Queue | null): Promise<void> => {
+    const at = now();
+    const error = 'deadline exceeded';
+    stats.expired(env.type);
+    await port(() => Promise.resolve(store.set(k(`item:${env.id}:error`), error, RESULT_TTL)));
+    await setState({ id: env.id, type: env.type, status: 'dead', attempt: env.attempt, error, queueAt: env.queueAt, startAt: env.startAt, endAt: at, priority: env.priority, group: env.group }, env.groupId);
+    if (p && q) {
+      await Promise.resolve(q.deadLetter?.(p.body, error));
+      await port(() => Promise.resolve(q.ack(p)));
+    }
+    notify({ kind: 'done', id: env.id, groupId: env.groupId, error });
+    emit({ kind: 'expired', id: env.id, type: env.type, groupId: env.groupId, deadline: env.deadline!, parent: env.parent, dependents: env.dependents, at });
     await settleGroup(env.groupId);
   };
 
@@ -565,7 +642,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   /** The async part (persist the `running` state + emit `started`) — can run **alongside** the handler. */
   const persistRunning = async (env: Envelope, runAt: number): Promise<void> => {
     await setState({ id: env.id, type: env.type, status: 'running', attempt: env.attempt, queueAt: env.queueAt, startAt: env.startAt, runAt, priority: env.priority, group: env.group }, env.groupId);
-    emit({ kind: 'started', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, at: runAt });
+    emit({ kind: 'started', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, parent: env.parent, dependents: env.dependents, at: runAt });
   };
   const markRunning = async (env: Envelope, runAt: number): Promise<void> => {
     markRunningSync(env, runAt);
@@ -582,15 +659,20 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     );
     if (p && q) {await port(() => Promise.resolve(q.ack(p)));}
     notify({ kind: 'done', id: env.id, groupId: env.groupId }); // detached wake; the doer slot frees without waiting on pub/sub
-    emit({ kind: 'succeeded', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, result: output, at });
+    emit({ kind: 'succeeded', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, result: output, parent: env.parent, dependents: env.dependents, at });
     await settleGroup(env.groupId);
   };
 
   const finishFailure = async (p: PulledWork | null, env: Envelope, runAt: number, err: unknown, q: Queue | null): Promise<void> => {
     if (env.attempt < attemptsOf(env.retry)) {
       const delay = backoff(env.attempt, env.retry, random);
+      // stop retrying once the deadline is passed — or if the next attempt would land past it
+      if (env.deadline !== undefined && now() + delay > env.deadline) {
+        await expireItem(p, env, q);
+        return;
+      }
       stats.retried(env.type);
-      emit({ kind: 'failed', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, error: errString(err), willRetry: true, at: now() });
+      emit({ kind: 'failed', id: env.id, type: env.type, groupId: env.groupId, attempt: env.attempt, error: errString(err), willRetry: true, parent: env.parent, dependents: env.dependents, at: now() });
       if (p && q) {await port(() => Promise.resolve(q.ack(p)));} // remove this delivery (if leased)...
       await rePush(env, delay); // ...and re-enter the queue (attempt + 1) — retry = re-enqueue, durable + fleet-wide
     } else {
@@ -638,51 +720,92 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     await finishFailure(p, env, runAt, err, q); // 'retry' / no decision → backoff retry (then dead-letter when exhausted)
   };
 
-  const queuedContext = (env: Envelope, pending: Promise<void>[]): WorkContext =>
-    makeContext({
-      id: env.id,
-      groupId: env.groupId,
-      attempt: env.attempt,
-      enqueueOne: (work, options) => {
-        pending.push(submitQueued(work.id, work.type, work.input, env.groupId, resolveOptions(work.type, work.input, options)));
-        return work.id;
-      },
-      setResult: (r) => {
-        pending.push(port(() => Promise.resolve(store.set(k(`group:${env.groupId}:result`), globalCodec.stringify(r), RESULT_TTL)).then(() => undefined)));
-      },
-      states: storeStates,
-      claim: storeClaim,
-    });
+  /** Write a group-result contribution: `final` locks it; `append` folds into the existing value (read-modify-write, best-effort under concurrency). */
+  const writeGroupResult = async (groupId: string, value: unknown, final: boolean, append?: (existing: unknown) => unknown): Promise<void> => {
+    const resultKey = k(`group:${groupId}:result`);
+    const finalKey = k(`group:${groupId}:final`);
+    if ((await Promise.resolve(store.get(finalKey))) !== undefined) {return;} // a `final` contributor already locked it
+    let toWrite = value;
+    if (append) {
+      const ex = await Promise.resolve(store.get(resultKey));
+      toWrite = append(ex === undefined ? undefined : globalCodec.parse(ex));
+    }
+    await port(() => Promise.resolve(store.set(resultKey, globalCodec.stringify(toWrite), RESULT_TTL)).then(() => undefined));
+    if (final) {await port(() => Promise.resolve(store.set(finalKey, '1', RESULT_TTL)).then(() => undefined));}
+  };
+
+  /**
+   * Run the returned WorkResult tree: enqueue works, build native dependencies (`.next`), write group
+   * contributions. `assignDeps` (the `on` list when this is a fired dependency) tags non-dependency
+   * children's `dependents`.
+   */
+  const applyNode = (node: WRNode, env: Envelope, pending: Promise<void>[], assignDeps?: readonly string[]): void => {
+    const d = node.data;
+    if (d.kind === 'void') {return;}
+    if (d.kind === 'result') {
+      pending.push(writeGroupResult(env.groupId, d.value, d.final, d.append));
+      return;
+    }
+    for (const item of d.items) {
+      if (isWR(item)) {applyNode(item, env, pending, assignDeps);}
+      else {pending.push(submitWork(item, env.groupId, d.options, { parent: env.id, dependents: item.type === DEPENDENCY_TYPE ? undefined : assignDeps }));}
+    }
+    for (const chain of d.chains) {
+      const dep = dependency({ on: workIdsOf(chain.on), queue: chain.queue as Work[], config: chain.condition });
+      pending.push(submitWork(dep, env.groupId, chain.options, { parent: env.id }));
+    }
+  };
+
+  /** Strict-return: every created WorkResult must be reachable from the returned `root` (else it silently does nothing). */
+  const reachableCheck = (root: WRNode, created: Set<WRNode>): void => {
+    const seen = new Set<WRNode>();
+    const walk = (n: WRNode): void => {
+      if (seen.has(n)) {return;}
+      seen.add(n);
+      if (n.data.kind === 'queue') {for (const it of n.data.items) {if (isWR(it)) {walk(it);}}}
+    };
+    walk(root);
+    for (const n of created) {
+      if (!seen.has(n)) {throw new Error(`work "${root.data.kind}" created a ctx.queue()/result()/void() that was not returned (set strictReturn:false to allow detached instructions)`);}
+    }
+  };
 
   /**
    * The task handed to a doer: run a single item (leased from queue `q`, or `skipQueue` with `p`/`q`
    * null). `release` is the {@link claim} teardown — {@link scoped} runs it in `finally`, so the
-   * active-set entry + heartbeat are always cleaned up regardless of how the run ends.
+   * active-set entry + heartbeat are always cleaned up regardless of how the run ends. The handler
+   * returns a {@link WorkResult}; we then apply its tree (enqueue children, write group contributions).
    */
   const execute = (p: PulledWork | null, env: Envelope, input: unknown, def: AnyWorkBuilder['def'], q: Queue | null, release: () => void): Promise<void> =>
     scoped(release, async () => {
       const runAt = now();
       markRunningSync(env, runAt); // flip the active-map entry synchronously (cheap, on the critical path)...
-      // ...but persist the `running` state + emit `started` ALONGSIDE the handler — the handler doesn't
-      // need that write to have landed to begin, and we only need it ordered before the terminal write.
+      // ...but persist the `running` state + emit `started` ALONGSIDE the handler.
       const running = persistRunning(env, runAt).catch((err: unknown) => report(err, 'commit'));
-      const pending: Promise<void>[] = [];
-      const ctx = queuedContext(env, pending);
-      let output: unknown;
+      const created = new Set<WRNode>();
+      const ctx = makeContext({ id: env.id, groupId: env.groupId, attempt: env.attempt, parent: env.parent, dependents: env.dependents }, created);
+      let itemValue: unknown;
       try {
         const logCtx = merge(opts.logContext?.(input, env.type), def.options.logContext?.(input as never));
-        output = await logWith(logCtx, () => Promise.resolve(def.handler(input as never, ctx)));
-        await Promise.all(pending); // ensure child enqueues + setResult landed before settling
+        const ret: unknown = await logWith(logCtx, () => Promise.resolve(def.handler(input as never, ctx)));
+        if (!isWR(ret)) {throw new Error(`work "${env.type}" handler must return a WorkResult — ctx.result(...), ctx.queue(...), or ctx.void()`);}
+        if (def.options.strictReturn ?? strictReturnDefault) {reachableCheck(ret, created);}
+        const pending: Promise<void>[] = [];
+        // a fired dependency tags its queued works' `dependents` with the ids it waited on
+        const assignDeps = env.type === DEPENDENCY_TYPE ? (input as { on?: readonly string[] }).on : undefined;
+        applyNode(ret, env, pending, assignDeps); // enqueue children + write group contributions
+        await Promise.all(pending); // ensure they landed before settling this item
+        itemValue = ret.data.kind === 'result' ? ret.data.value : undefined; // `.result()` value (void for a queue/void root)
       } catch (err) {
         await running; // order the 'running' write before the terminal/deferred state
-        await handleFailure(p, env, runAt, err, q); // reschedule / dead-letter / retry per the error + classifier
+        await handleFailure(p, env, runAt, err, q);
         return;
       }
       // the handler succeeded — recording that is best-effort: a store/ack/pub-sub error here must
       // NOT re-run the handler (which would duplicate its work). Report it instead of retrying.
       try {
-        await running; // order the 'running' write before the terminal 'success' state
-        await finishSuccess(p, env, runAt, output, q);
+        await running;
+        await finishSuccess(p, env, runAt, itemValue, q);
       } catch (err) {
         report(err, 'commit');
       }
@@ -717,8 +840,14 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
           await Promise.all(items.map((it) => handleFailure(it.p, it.env, runAt, err, it.q))); // each item routed independently (reschedule / dead-letter / retry)
           return;
         }
-        // each item succeeded — committing its result is best-effort and must not re-run the batch
-        await Promise.all(items.map((it, i) => Promise.resolve(finishSuccess(it.p, it.env, runAt, outputs[i], it.q)).catch((err: unknown) => report(err, 'commit'))));
+        // each item succeeded — its value is also a group contribution (last-to-finish). Best-effort: must not re-run the batch.
+        await Promise.all(
+          items.map((it, i) =>
+            Promise.resolve(writeGroupResult(it.env.groupId, outputs[i], false))
+              .then(() => finishSuccess(it.p, it.env, runAt, outputs[i], it.q))
+              .catch((err: unknown) => report(err, 'commit')),
+          ),
+        );
       },
     );
 
@@ -778,6 +907,12 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
       env = JSON.parse(p.body) as Envelope;
     } catch {
       await Promise.resolve(q.ack(p)); // unparseable — drop it
+      return false;
+    }
+
+    // past its deadline before it could start+finish → expire it (no run, no retry).
+    if (expired(env)) {
+      await expireItem(p, env, q);
       return false;
     }
 
@@ -946,7 +1081,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   };
 
   /* ---- built-in dependency type (queued, non-blocking, dead-letters on timeout) ---- */
-  registry.set(DEPENDENCY_TYPE, defineWork(DEPENDENCY_TYPE, dependencyHandler, { retry: { attempts: DEP_RETRY_ATTEMPTS } }));
+  registry.set(DEPENDENCY_TYPE, defineWork(DEPENDENCY_TYPE, dependencyHandler, { retry: { attempts: DEP_RETRY_ATTEMPTS }, strictReturn: false }));
 
   /* ---- public surface ---- */
   const start = (): void => {

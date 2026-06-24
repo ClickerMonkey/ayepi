@@ -14,7 +14,7 @@ const envFor = (over: Record<string, unknown>): string =>
 
 describe('coverage: engine edges', () => {
   it('runs zero-config (default options) via skipQueue', async () => {
-    const echo = defineWork('echo', (i: { v: number }) => i.v, { skipQueue: true });
+    const echo = defineWork('echo', (i: { v: number }, ctx) => ctx.result(i.v), { skipQueue: true });
     const w = createWork({ work: [echo] as const }); // omit pollInterval/visibility/doer/codec → default branches
     try {
       expect(await w.enqueue(echo({ v: 7 })).result()).toBe(7);
@@ -24,7 +24,7 @@ describe('coverage: engine edges', () => {
   });
 
   it('drops an unparseable queue body', async () => {
-    const noop = defineWork('noop', () => 0);
+    const noop = defineWork('noop', (_i: unknown, ctx) => ctx.result(0));
     const backend = memoryBackend();
     const w = createWork({ work: [noop] as const, ...backend, ...fast });
     try {
@@ -37,7 +37,7 @@ describe('coverage: engine edges', () => {
   });
 
   it('dead-letters an unknown work type once attempts are exhausted', async () => {
-    const noop = defineWork('noop', () => 0);
+    const noop = defineWork('noop', (_i: unknown, ctx) => ctx.result(0));
     const backend = memoryBackend();
     const w = createWork({ work: [noop] as const, ...backend, ...fast });
     try {
@@ -50,7 +50,7 @@ describe('coverage: engine edges', () => {
   });
 
   it('defers an unknown type that still has attempts remaining', async () => {
-    const noop = defineWork('noop', () => 0);
+    const noop = defineWork('noop', (_i: unknown, ctx) => ctx.result(0));
     const backend = memoryBackend();
     const w = createWork({ work: [noop] as const, ...backend, ...fast });
     try {
@@ -64,7 +64,7 @@ describe('coverage: engine edges', () => {
   });
 
   it('dead-letters bad input (codec parse fails)', async () => {
-    const noop = defineWork('noop', (i: unknown) => i);
+    const noop = defineWork('noop', (i: unknown, ctx) => ctx.result(i));
     const backend = memoryBackend();
     const w = createWork({ work: [noop] as const, ...backend, ...fast });
     try {
@@ -77,7 +77,7 @@ describe('coverage: engine edges', () => {
   });
 
   it('declines work via accept (deferred for another instance)', async () => {
-    const ping = defineWork('ping', () => 'P');
+    const ping = defineWork('ping', (_i: unknown, ctx) => ctx.result('P'));
     const backend = memoryBackend();
     let started = 0;
     let declined = false;
@@ -103,7 +103,7 @@ describe('coverage: engine edges', () => {
   });
 
   it('defers when the per-type doer is saturated', async () => {
-    const job = defineWork('job', () => 1, { doer: fullDoer });
+    const job = defineWork('job', (_i: unknown, ctx) => ctx.result(1), { doer: fullDoer });
     const backend = memoryBackend();
     const w = createWork({ work: [job] as const, ...backend, ...fast });
     try {
@@ -129,7 +129,7 @@ describe('coverage: engine edges', () => {
   });
 
   it('keeps looping when queue.pop throws once', async () => {
-    const noop = defineWork('noop', () => 'ok');
+    const noop = defineWork('noop', (_i: unknown, ctx) => ctx.result('ok'));
     const base = memoryBackend();
     let threw = false;
     const queue = {
@@ -155,7 +155,7 @@ describe('coverage: engine edges', () => {
 describe('coverage: scheduler', () => {
   it('fires a fn-form schedule', async () => {
     let fired = 0;
-    const tick = defineWork('tick', () => void fired++);
+    const tick = defineWork('tick', (_i: unknown, ctx) => (fired++, ctx.void()));
     const w = createWork({ work: [tick] as const, ...fast });
     try {
       const cancel = w.schedule({ name: 's', next: (n) => n, run: () => tick({}) });
@@ -170,7 +170,7 @@ describe('coverage: scheduler', () => {
   });
 
   it('accepts a cron schedule (computes the next fire at init)', async () => {
-    const tick = defineWork('tick', () => 0);
+    const tick = defineWork('tick', (_i: unknown, ctx) => ctx.result(0));
     const w = createWork({ work: [tick] as const, ...fast });
     try {
       const cancel = w.schedule({ name: 'c', cron: '0 0 1 1 *', run: () => tick({}) }); // far future, won't fire here
@@ -181,7 +181,7 @@ describe('coverage: scheduler', () => {
   });
 
   it('throws when a schedule has neither cron nor next', async () => {
-    const tick = defineWork('tick', () => 0);
+    const tick = defineWork('tick', (_i: unknown, ctx) => ctx.result(0));
     const w = createWork({ work: [tick] as const, ...fast });
     try {
       expect(() => w.schedule({ name: 'bad', run: () => tick({}) })).toThrow();
@@ -204,7 +204,8 @@ describe('coverage: default instance + builders', () => {
 
   it('defineBatchWork single-item fallback handler works un-batched', async () => {
     const dbl = defineBatchWork('dbl', { size: 5, maxWait: 10, run: (xs: number[]) => xs.map((x) => x * 2) });
-    expect(await dbl.def.handler(21, {} as never)).toBe(42);
+    // the fallback returns ctx.result(value); a result-identity stub surfaces the computed value
+    expect(await dbl.def.handler(21, { result: (v: unknown) => v } as never)).toBe(42);
   });
 });
 
@@ -217,9 +218,10 @@ describe('coverage: dependency handler (direct)', () => {
       attempt: 1,
       queue: (work: unknown, opts?: unknown) => {
         queued.push({ work, opts });
-        return Array.isArray(work) ? work.map(() => 'cid') : 'cid';
+        return { __wr: 'queue' };
       },
-      setResult: () => {},
+      void: () => ({ __wr: 'void' }),
+      result: (value: unknown) => ({ __wr: 'result', value }),
       states: async (ids: readonly string[]) => ids.map(() => undefined),
       claim: async () => true,
       ...over,
@@ -255,7 +257,7 @@ describe('coverage: dependency handler (direct)', () => {
 
 describe('coverage: more engine edges', () => {
   it('swallows throwing event handlers (global + per-type)', async () => {
-    const boom = defineWork('boom', () => 'ok', {
+    const boom = defineWork('boom', (_i: unknown, ctx) => ctx.result('ok'), {
       onEvent: () => {
         throw new Error('per-type handler boom');
       },
@@ -295,7 +297,7 @@ describe('coverage: more engine edges', () => {
       setIfNotExists: (key: string, value: string) => (map.has(key) ? false : (map.set(key, value), true)),
       // no `increment` → engine falls back to get+set for the group counter
     };
-    const add = defineWork('add', (i: { a: number; b: number }) => i.a + i.b);
+    const add = defineWork('add', (i: { a: number; b: number }, ctx) => ctx.result(i.a + i.b));
     const w = createWork({ work: [add] as const, queue: backend.queue, pubsub: backend.pubsub, store, ...fast });
     try {
       expect(await w.enqueue(add({ a: 2, b: 5 })).result()).toBe(7);
@@ -305,9 +307,9 @@ describe('coverage: more engine edges', () => {
   });
 
   it('ignores malformed pub/sub messages while waiting (item + group waiters)', async () => {
-    const slow = defineWork('slow', async (i: { v: number }) => {
+    const slow = defineWork('slow', async (i: { v: number }, ctx) => {
       await wait(40);
-      return i.v;
+      return ctx.result(i.v);
     });
     const backend = memoryBackend();
     const w = createWork({ work: [slow] as const, ...backend, ...fast });
@@ -327,9 +329,9 @@ describe('coverage: more engine edges', () => {
   it('heartbeats a long-running item (and start() is idempotent)', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
-    const slow = defineWork('slow', async () => {
+    const slow = defineWork('slow', async (_i: unknown, ctx) => {
       await gate;
-      return 'ok';
+      return ctx.result('ok');
     });
     const backend = memoryBackend();
     const w = createWork({ work: [slow] as const, ...backend, pollInterval: 5, visibility: 100, heartbeat: 6 });
@@ -349,7 +351,7 @@ describe('coverage: more engine edges', () => {
   });
 
   it('treats a corrupt stored state as unknown (readState swallows the parse error)', async () => {
-    const noop = defineWork('noop', () => 1);
+    const noop = defineWork('noop', (_i: unknown, ctx) => ctx.result(1));
     const backend = memoryBackend();
     const w = createWork({ work: [noop] as const, ...backend, ...fast });
     try {
@@ -363,7 +365,7 @@ describe('coverage: more engine edges', () => {
   });
 
   it('dead-letters a skipQueue work of an unknown type', async () => {
-    const known = defineWork('known', () => 1);
+    const known = defineWork('known', (_i: unknown, ctx) => ctx.result(1));
     const backend = memoryBackend();
     const w = createWork({ work: [known] as const, ...backend, ...fast });
     try {
@@ -398,7 +400,7 @@ describe('coverage: more engine edges', () => {
 
   it('fires a schedule whose next returns a Date', async () => {
     let fired = 0;
-    const tick = defineWork('tick', () => void fired++);
+    const tick = defineWork('tick', (_i: unknown, ctx) => (fired++, ctx.void()));
     const w = createWork({ work: [tick] as const, ...fast });
     try {
       const cancel = w.schedule({ name: 'd', next: (n) => new Date(n), run: () => tick({}) });
@@ -426,9 +428,9 @@ describe('coverage: fail-open against non-critical errors (onError)', () => {
     let runs = 0;
     const echo = defineWork(
       'echo',
-      (i: { v: number }) => {
+      (i: { v: number }, ctx) => {
         runs++;
-        return i.v;
+        return ctx.result(i.v);
       },
       { skipQueue: true },
     );
@@ -463,9 +465,9 @@ describe('coverage: fail-open against non-critical errors (onError)', () => {
     let runs = 0;
     const echo = defineWork(
       'echo',
-      (i: { v: number }) => {
+      (i: { v: number }, ctx) => {
         runs++;
-        return i.v;
+        return ctx.result(i.v);
       },
       { skipQueue: true },
     );
@@ -491,7 +493,7 @@ describe('coverage: fail-open against non-critical errors (onError)', () => {
 
   it('absorbs a flapping port write via portRetry', async () => {
     const errs: unknown[] = [];
-    const echo = defineWork('echo', (i: { v: number }) => i.v, { skipQueue: true });
+    const echo = defineWork('echo', (i: { v: number }, ctx) => ctx.result(i.v), { skipQueue: true });
     const backend = memoryBackend();
     let firstSet = true;
     const store = {
@@ -518,9 +520,9 @@ describe('coverage: fail-open against non-critical errors (onError)', () => {
     let runs = 0;
     const echo = defineWork(
       'echo',
-      (i: { v: number }) => {
+      (i: { v: number }, ctx) => {
         runs++;
-        return i.v;
+        return ctx.result(i.v);
       },
       { skipQueue: true },
     );
@@ -569,7 +571,7 @@ describe('coverage: fail-open against non-critical errors (onError)', () => {
 
   it('a queue poll error is reported and the loop keeps running', async () => {
     const phases: string[] = [];
-    const noop = defineWork('noop', (i: { v: number }) => i.v);
+    const noop = defineWork('noop', (i: { v: number }, ctx) => ctx.result(i.v));
     const backend = memoryBackend();
     let fail = true;
     const queue = {
@@ -592,7 +594,7 @@ describe('coverage: fail-open against non-critical errors (onError)', () => {
 
   it('a routing (accept) error is reported, not fatal', async () => {
     const phases: string[] = [];
-    const noop = defineWork('noop', (i: { v: number }) => i.v);
+    const noop = defineWork('noop', (i: { v: number }, ctx) => ctx.result(i.v));
     const backend = memoryBackend();
     const w = createWork({
       work: [noop] as const,

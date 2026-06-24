@@ -71,7 +71,7 @@ describe('adaptiveDelay — throughput-driven backpressure', () => {
   });
 
   it('plugs into createWork.backpressure and lets healthy work run', async () => {
-    const job = defineWork('ad', () => 1);
+    const job = defineWork('ad', (_i: unknown, ctx) => ctx.result(1));
     const w = createWork({ work: [job] as const, ...fast, backpressure: adaptiveDelay() });
     try {
       expect(await w.enqueue(job({})).result()).toBe(1);

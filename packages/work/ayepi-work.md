@@ -12,10 +12,13 @@ hood, with copy-pasteable examples. Keep it in sync with the installed package v
 `@ayepi/work` is a **type-safe distributed work / job-queue + workflow engine**. Define
 work types with `defineWork` (each yields a typed, callable, queueable builder), pass them
 to `createWork` as a `const` registry, and `enqueue` is fully checked — by instance
-(`enqueue(add({ a, b }))`) or by name (`enqueue('add', { a, b })`). Work is traced as a
-**group**: work queued inside a handler joins the same group, and awaiting a handle
-resolves to the group's result. Reach for it for durable background jobs, fan-out/fan-in
-workflows, retries, scheduling, or cross-process coordination — type-checked end to end.
+(`enqueue(add({ a, b }))`) or by name (`enqueue('add', { a, b })`). A handler **returns a
+`WorkResult`** (`ctx.result` / `ctx.queue` / `ctx.void` / `.next`) describing what it
+produced, so each work carries **two** inferred types — its *awaited-alone* result and its
+*group* contribution — and `enqueue(root).group()` resolves to a **precise union from the
+workflow structure**, not the whole registry. Reach for it for durable background jobs,
+fan-out/fan-in workflows, retries, scheduling, or cross-process coordination — type-checked
+end to end.
 
 It runs **zero-config**: an in-memory implementation of its three ports (`Queue` /
 `PubSub` / `Store`) is bundled, so `createWork()` works with no setup. The same engine
@@ -28,7 +31,7 @@ pnpm add @ayepi/work
 ```ts
 import { defineWork, createWork } from '@ayepi/work'
 
-const add = defineWork('add', (i: { a: number; b: number }) => i.a + i.b)
+const add = defineWork('add', (i: { a: number; b: number }, ctx) => ctx.result(i.a + i.b))
 const w = createWork({ work: [add] as const })
 
 const sum = await w.enqueue(add({ a: 1, b: 2 })).result() // 3, typed as number
@@ -41,14 +44,15 @@ Bare `import` has **no side effects** — the default instance does not auto-sta
 
 This reference is split by topic. Start here, then jump to the relevant page:
 
-- **`ayepi-work.md`** (this file) — overview, `defineWork` / `defineBatchWork` /
+- **`ayepi-work.md`** (this file) — overview, the **`WorkResult` handler contract**
+  (`ctx.result` / `ctx.queue` / `ctx.void` / `.next`), `defineWork` / `defineBatchWork` /
   `createWork`, the typed `enqueue` overloads, `WorkHandle`, `WorkContext`, instance
-  options, retries, doers, the default instance, tunable defaults, plus abbreviated
-  ["How it works under the hood"](#how-it-works-under-the-hood) and
-  ["Gotchas"](#gotchas--constraints) sections.
+  options, retries, deadlines, the id generator, doers, the default instance, tunable
+  defaults, plus abbreviated ["How it works under the hood"](#how-it-works-under-the-hood)
+  and ["Gotchas"](#gotchas--constraints) sections.
 - **[`ayepi-work-deps-schedule.md`](./ayepi-work-deps-schedule.md)** — fan-in
-  dependencies (`dependency` / `DependencyCondition` / `conditionMet`) and scheduling
-  (`schedule` / `parseCron` / `nextAfter` / cron + fn forms).
+  dependencies (`dependency` / `DependencyCondition` / `conditionMet`, and the native
+  `.next` chain) and scheduling (`schedule` / `parseCron` / `nextAfter` / cron + fn forms).
 - **[`ayepi-work-ports.md`](./ayepi-work-ports.md)** — the three ports
   (`Queue` / `PubSub` / `Store`), custom backends, the bundled in-memory backend
   (`memoryQueue` / `memoryPubSub` / `memoryStore` / `memoryBackend`), the JSON codec
@@ -58,53 +62,117 @@ All durations throughout the package are **milliseconds**.
 
 ---
 
+## The handler contract — returning a `WorkResult`
+
+Every handler **returns a `WorkResult`** describing what it produced. A `WorkResult` is a
+lazy instruction built by the context and carried out **after** the handler returns. There
+are three constructors plus a chaining method:
+
+```ts
+ctx.result(value, opts?)   // contribute a value (this item's .result() AND the group)
+ctx.queue(items, opts?)    // run sub-work in the same group; this item DELEGATES (.result() = void)
+ctx.void()                 // contribute nothing
+result.next(works, cond?, opts?)  // native dependency: queue `works` once prior items satisfy `cond`
+```
+
+Each work then carries **two** inferred types — its *awaited-alone* result `S` (what
+`.result()` resolves to) and its *group* contribution `G` (what awaiting the handle /
+`.group()` resolves to). Because `G` is built from the structure the handler returns,
+`enqueue(root).group()` is a **precise union of the workflow's parts**, not the
+registry-wide union.
+
+```ts
+// leaf: S = G = number
+const add = defineWork('add', (i: { a: number; b: number }, ctx) => ctx.result(i.a + i.b))
+
+// delegating root: S = void, G = number | string (the union of what it queues)
+const fetch = defineWork('fetch', (i: { id: string }, ctx) => ctx.result(load(i.id)))   // string
+const flow = defineWork('flow', (i: { ids: string[] }, ctx) =>
+  ctx.queue(i.ids.map((id) => fetch({ id })))            // .result() is void; .group() is string
+    .next([add({ a: 1, b: 2 })], 'all-success'),         // .next widens the group by number
+)
+```
+
+- **`ctx.result(value, opts?)`** ⇒ `WorkResult<value, value>`. `opts`: `{ final }` locks the
+  group result (later contributors can't overwrite it); `{ append: (existing) => next }`
+  folds this value into the existing group result instead of overwriting.
+- **`ctx.queue(items, opts?)`** ⇒ `WorkResult<void, GroupOf<items>>`. `items` is a `Work`, a
+  `WorkResult`, or a tuple/array of them (nesting allowed). The works join **this item's
+  group**; the item itself **delegates**, so its own `.result()` is `void`. `opts` is the
+  same `WorkInstanceOptions` as `enqueue` (`delay`, `priority`, `group`, …).
+- **`ctx.void()`** ⇒ `WorkResult<void, void>`. Contributes nothing (and `void` is dropped
+  from a group union).
+- **`.next(works, condition?, opts?)`** — a **native dependency**: queue `works` once the
+  works the prior result queued satisfy `condition` (default `'all-success'`; see
+  [deps & scheduling](./ayepi-work-deps-schedule.md)). It widens the group type by `works`'
+  contribution and is the ergonomic form of enqueuing a `dependency(...)` by hand.
+
+**Strict-return.** A `WorkResult` that is **created but not returned** throws — it would
+otherwise be invisible to the group type and silently never run. Opt out per type
+(`{ strictReturn: false }`) or system-wide (`createWork({ strictReturn: false })`); with it
+off, a detached `ctx.queue(...)` simply doesn't execute.
+
+**Group value (runtime).** The group's resolved value is the **last contributor to finish**
+(last-writer-wins). `ctx.result(v, { final: true })` locks it; `{ append }` accumulates
+(read-modify-write — best-effort under concurrency, exact when the contributors are
+serialized). `ctx.void()` and delegating `ctx.queue(...)` contribute no value of their own.
+
 ## Defining work — `defineWork`
 
 ```ts
-function defineWork<Name extends string, I, O>(
+function defineWork<Name extends string, I, S, G>(
   name: Name,
-  handler: WorkHandler<I, O>,        // (input: I, ctx: WorkContext) => O | Promise<O>
+  handler: WorkHandler<I, S, G>,     // (input: I, ctx: WorkContext) => WorkResult<S, G> | Promise<…>
   opts?: WorkOptions<I>,             // default {}
-): WorkBuilder<Name, I, O>
+): WorkBuilder<Name, I, S, NonVoidUnion<G>>
 ```
 
-Returns a **callable builder** typed by its input `I` and output `O`. Call it with the
-work's exact input to mint a queueable `Work<Name, O>` with a fresh build-time `id`:
+Returns a **callable builder** typed by its input `I` and the `WorkResult` the handler
+returns (`S` = awaited-alone result, `G` = group contribution, with `void` dropped). Call
+it with the work's exact input to mint a queueable `Work<Name, S, G>` with a fresh
+build-time `id`:
 
 ```ts
-const add = defineWork('add', (i: { a: number; b: number }) => i.a + i.b)
-const a = add({ a: 1, b: 2 }) // a: Work<'add', number>, a.id assigned now
+const add = defineWork('add', (i: { a: number; b: number }, ctx) => ctx.result(i.a + i.b))
+const a = add({ a: 1, b: 2 }) // a: Work<'add', number, number>, a.id assigned now
 ```
 
 A `WorkBuilder` also exposes `.type` (the name) and `.def` (the underlying
 `WorkDefinition`). The id is assigned at **build time**, so you can reference a work
 instance before queueing it — e.g. to depend on it (see
-[deps & scheduling](./ayepi-work-deps-schedule.md)).
+[deps & scheduling](./ayepi-work-deps-schedule.md)). Override how build-time ids are minted
+with `setIdGenerator` (see [Custom id generation](#custom-id-generation)).
 
 ### `WorkHandler` and `WorkContext`
 
 ```ts
-type WorkHandler<I, O> = (input: I, ctx: WorkContext) => O | Promise<O>
+type WorkHandler<I, S, G> = (input: I, ctx: WorkContext) => WorkResult<S, G> | Promise<WorkResult<S, G>>
 
 interface WorkContext {
-  readonly id: string         // this item's id
-  readonly groupId: string    // group shared by this item and everything it queues
-  readonly attempt: number    // delivery attempt (1 = first try)
-  queue(work: Work, options?: WorkInstanceOptions): string
-  queue(works: readonly Work[], options?: WorkInstanceOptions): string[]
-  setResult(result: unknown): void
+  readonly id: string                  // this item's id
+  readonly groupId: string             // group shared by this item and everything it queues
+  readonly attempt: number             // delivery attempt (1 = first try)
+  readonly parent?: string             // id of the work that queued this one (undefined at top level)
+  readonly dependents?: readonly string[]  // when queued by a fired dependency, the ids it depended on
+  result<R>(value: R, opts?: { final?: boolean; append?: (existing: R | undefined) => R }): WorkResult<R, R>
+  queue<const Is>(items: Is, opts?: WorkInstanceOptions): WorkResult<void, GroupOf<Is>>
+  void(): WorkResult<void, void>
   states(ids: readonly string[]): Promise<(WorkState | undefined)[]>
   claim(key: string): Promise<boolean>
 }
 ```
 
-- `ctx.queue(child(input))` queues child work **into the same group** and returns the
-  child id(s). Awaiting the group waits for these children.
-- `ctx.setResult(value)` records the **group's** result (last-writer-wins). This is what
-  a top-level `await enqueue(...)` resolves to.
+- `ctx.result(value, opts?)` / `ctx.queue(items, opts?)` / `ctx.void()` build the
+  `WorkResult` the handler returns — see [the handler contract](#the-handler-contract--returning-a-workresult) above.
+- `ctx.parent` is the id of the work whose handler queued this one (via `ctx.queue` or
+  `.next`); it's `undefined` for a top-level `enqueue`. `ctx.dependents` is the ids a
+  fired dependency was waiting `on` when it queued this work. Both are also exposed on the
+  item-scoped `WorkEvent`s.
 - `ctx.states(ids)` reads other items' `WorkState` (used by the dependency type).
 - `ctx.claim(key)` wins a one-time distributed claim — returns `true` exactly once across
   the fleet (built on `Store.setIfNotExists`).
+
+A handler shapes the group value by **returning** `ctx.result(value, { final?, append? })`.
 
 ### `WorkOptions` — per-type config
 
@@ -122,6 +190,8 @@ interface WorkOptions<I> {
   readonly onEvent?: (event: WorkEvent) => void          // per-type lifecycle hook
   readonly onFailure?: FailureClassifier                 // classify a failure → abort / re-queue / retry (see "Classifying a failure")
   readonly logContext?: (input: I) => object             // derive logWith context from input
+  readonly timeout?: number                              // default relative deadline (ms from enqueue)
+  readonly strictReturn?: boolean                        // require WorkResults to be returned (default true)
   readonly skipQueue?: boolean                           // run the first attempt in-process
 }
 ```
@@ -145,7 +215,7 @@ individually, but **execute together** once `size` accumulate or `maxWait` ms el
 function defineBatchWork<Name extends string, I, O>(
   name: Name,
   config: BatchConfig<I, O> & WorkOptions<I>,
-): WorkBuilder<Name, I, O>
+): WorkBuilder<Name, I, O, NonVoidUnion<O>>   // each item's S = G = O
 
 interface BatchConfig<I, O> {
   readonly size: number        // flush when this many items are buffered
@@ -211,6 +281,8 @@ bundled in-memory backend and an `unlimitedDoer`.
 | `metrics` | `Metrics` (`@ayepi/core` registry; bring one for quantiles) | fresh `createMetrics()` |
 | `accept` | `(info: WorkAcceptInfo) => boolean` | — (accept all) |
 | `unhandledWorkGroup` | `(info: UnhandledWorkGroupInfo) => void` | — |
+| `strictReturn` | `boolean` (require handlers to return every `WorkResult` they create) | `true` |
+| `generateId` | `() => string` (ids the **engine** mints — group/name-form/dependency/re-push) | process generator (`setIdGenerator`) |
 | `autoStart` | `boolean` | `true` |
 | `now` | `() => number` | `Date.now` |
 | `random` | `() => number` | `Math.random` |
@@ -223,10 +295,10 @@ bundled in-memory backend and an `unlimitedDoer`.
 
 ```ts
 interface WorkSystem<Defs extends readonly AnyWorkBuilder[]> {
-  // instance form — await ⇒ group result, .result() ⇒ this item's output
-  enqueue<W extends Work>(work: W, options?: WorkInstanceOptions): WorkHandle<OutputOfWork<W>, GroupResult<Defs>>
+  // instance form — await ⇒ the root's group contribution (structural), .result() ⇒ its own output
+  enqueue<W extends Work>(work: W, options?: WorkInstanceOptions): WorkHandle<SelfOfWork<W>, GroupOfWork<W>>
   // name form — name ∈ registry, input typed
-  enqueue<K extends RegistryNames<Defs>>(name: K, input: InputForName<Defs, K>, options?: WorkInstanceOptions): WorkHandle<OutputForName<Defs, K>, GroupResult<Defs>>
+  enqueue<K extends RegistryNames<Defs>>(name: K, input: InputForName<Defs, K>, options?: WorkInstanceOptions): WorkHandle<SelfForName<Defs, K>, GroupForName<Defs, K>>
   schedule(config: ScheduleConfig): () => void  // returns a cancel fn; see deps-schedule doc
   start(): void                                  // start worker + scheduler loops (idempotent)
   stop(): Promise<void>                          // stop loops, flush in-flight (idempotent)
@@ -266,29 +338,41 @@ w.enqueue('nope', {})              // ✗ type error: unknown work name
 ```ts
 import { defineWork, createWork } from '@ayepi/work'
 
-const add = defineWork('add', (i: { a: number; b: number }) => i.a + i.b)
+const add = defineWork('add', (i: { a: number; b: number }, ctx) => ctx.result(i.a + i.b))
 const w = createWork({ work: [add] as const })
 
-const group = await w.enqueue(add({ a: 1, b: 2 }))  // GroupResult<Defs> (here: number)
+const group = await w.enqueue(add({ a: 1, b: 2 }))  // group contribution (here: number)
 const own = await w.enqueue(add({ a: 1, b: 2 })).result()  // number — this item's output
 await w.stop()
 ```
 
-### Example: group linking with `ctx.queue` + `ctx.setResult`
+### Example: fanning out with `ctx.queue` (and shaping the group value)
 
-`ctx.queue` fans out children into the same group; awaiting the parent's handle waits for
-**all** of them. `ctx.setResult` records what that await resolves to:
+A handler **returns** `ctx.queue(children)` to fan out into the same group; awaiting the
+parent's handle waits for **all** of them, and the group value is the **last child to
+finish**. The parent delegates, so its own `.result()` is `void`:
 
 ```ts
-const child = defineWork('child', (i: { n: number }) => i.n * 2)
-const parent = defineWork('parent', (i: { ids: string[] }, ctx) => {
-  for (const id of i.ids) ctx.queue(child({ n: id.length })) // each joins the same group
-  ctx.setResult({ queued: i.ids.length })                    // what awaiting the handle resolves to
-})
+const child = defineWork('child', (i: { n: number }, ctx) => ctx.result(i.n * 2))
+const parent = defineWork('parent', (i: { ids: string[] }, ctx) =>
+  ctx.queue(i.ids.map((id) => child({ n: id.length }))), // each joins the same group
+)
 
 const w = createWork({ work: [child, parent] as const })
 const group = await w.enqueue(parent({ ids: ['a', 'b'] })) // resolves after both children settle
-// group === { queued: 2 }
+// group is the last child's output (here: 2); typed number (child's contribution)
+await w.enqueue(parent({ ids: ['a'] })).result() // undefined — the parent delegates
+```
+
+To make the parent contribute its **own** value instead of delegating, return
+`ctx.result(...)` (optionally `{ final: true }` so children can't overwrite it) and queue
+the children via `.next` or a nested result. Use `{ append }` to accumulate across
+contributors:
+
+```ts
+const sum = defineWork('sum', (i: { n: number }, ctx) =>
+  ctx.result(i.n, { append: (existing) => (existing ?? 0) + i.n }), // fold into the group value
+)
 ```
 
 ## Instance options — `WorkInstanceOptions`
@@ -304,6 +388,8 @@ interface WorkInstanceOptions {
   readonly retry?: RetryOptions  // retry policy override for this item
   readonly priority?: number     // higher runs first (consumed by the doer)
   readonly group?: string        // fairness group label (consumed by balancedDoer)
+  readonly deadline?: number     // epoch ms by which it must start+finish, else terminal (no retry)
+  readonly timeout?: number      // relative deadline (ms from enqueue) — deadline = queueAt + timeout
   readonly skipQueue?: boolean    // run the first attempt in-process (no queue hop)
 }
 ```
@@ -599,19 +685,52 @@ back off). Default `(err) => (err instanceof RetryAbort ? false : 0)`, so e.g.
 404 and waits ≥30s on a 429 — no `RetryAbort` wrapper needed. Overriding `on` replaces the default,
 so to keep retrying through a `RetryAbort` just return a number (e.g. `on: () => 0`) instead of `false`.
 
+## Deadlines & timeouts
+
+A `deadline` (absolute epoch ms) or `timeout` (relative ms from enqueue) bounds the whole
+life of an item: if it hasn't **started and finished** by then, it is **not retried** — it
+goes terminal and an **`'expired'`** event fires. Unlike a retry budget (which counts
+attempts), a deadline is wall-clock. Set it per-instance, or per-type via `timeout`:
+
+```ts
+w.enqueue(charge({ id }), { timeout: 30_000 })                    // must finish within 30s of enqueue
+w.enqueue(report({}),     { deadline: Date.parse('2030-01-01') }) // absolute cutoff
+const sync = defineWork('sync', handler, { timeout: 60_000 })     // per-type default
+```
+
+`deadline` wins over `timeout` (which resolves to `queueAt + timeout`); the resolved
+absolute deadline is **serialized with the item** and carried across re-pushes. It is
+enforced at two points:
+
+- **Before dispatch** — an item whose scheduled `startAt` is already past its deadline
+  (e.g. a long `delay`) expires **without ever running**.
+- **Before a retry** — if the next backoff would land past the deadline, the failing item
+  expires **instead of** re-enqueueing.
+
+On expiry the item goes terminal (status `dead`, error `'deadline exceeded'`), its group
+settles, the awaiting `.result()` **rejects**, and the `'expired'` event
+(`{ kind: 'expired'; id; type; groupId; deadline; parent?; dependents?; at }`) fires; a
+`work.expired` counter is bumped. (The dependency type's own `timeout` is the same idea
+applied to a fan-in gate — see [deps & scheduling](./ayepi-work-deps-schedule.md).)
+
 ## Lifecycle events & affinity
 
 `onEvent(event)` (global, and per-type via `WorkOptions.onEvent`) fires for:
 
 ```ts
 type WorkEvent =
-  | { kind: 'queued';     id; type; groupId; at }
-  | { kind: 'started';    id; type; groupId; attempt; at }
+  | { kind: 'queued';     id; type; groupId; parent?; dependents?; at }
+  | { kind: 'started';    id; type; groupId; attempt; parent?; dependents?; at }
   | { kind: 'deferred';   id; type; groupId; runAt; at }                        // rescheduled (WorkDelayError); attempt unchanged
-  | { kind: 'succeeded';  id; type; groupId; attempt; result; at }
-  | { kind: 'failed';     id; type; groupId; attempt; error; willRetry; at }   // willRetry:false ⇒ dead-letter
+  | { kind: 'succeeded';  id; type; groupId; attempt; result; parent?; dependents?; at }
+  | { kind: 'failed';     id; type; groupId; attempt; error; willRetry; parent?; dependents?; at }   // willRetry:false ⇒ dead-letter
+  | { kind: 'expired';    id; type; groupId; deadline; parent?; dependents?; at }   // past its deadline/timeout — terminal, no retry
   | { kind: 'group-done'; groupId; result; at }
 ```
+
+The item-scoped events carry **`parent`** (the id of the work that queued this one) and
+**`dependents`** (the ids it depended on, when queued by a fired dependency) — the same
+metadata exposed on `ctx`.
 
 Both hooks are wrapped so a throwing handler **never disrupts the engine**.
 
@@ -704,6 +823,30 @@ for cradle-to-grave. A type's series appear once it's first queued or claimed. `
 batches a burst of mutations into one callback (via microtask); for pull-based exporters just
 call `stats()`/`metrics.list()`. See `@ayepi/core`'s stats module for the registry API.
 
+## Custom id generation
+
+Work ids are minted in two places, both overridable:
+
+- **Build-time** — a builder assigns an id when you call it (`add({ a, b }).id`). Override
+  the process-wide generator with `setIdGenerator(fn)`; call `setIdGenerator()` with no
+  argument to reset to the default (UUID).
+- **Engine-minted** — group ids, name-form item ids, dependency keys, and re-push ids. Set
+  `WorkSystemOptions.generateId` to override these per system (defaults to the process
+  generator).
+
+```ts
+import { setIdGenerator, createWork } from '@ayepi/work'
+
+let n = 0
+setIdGenerator(() => `job-${++n}`)              // build-time ids: job-1, job-2, …
+const w = createWork({ work: [...] as const, generateId: () => `eng-${++n}` })
+// ...
+setIdGenerator()                                 // reset to the default UUID generator
+```
+
+Use a deterministic generator in tests, or a monotonic/prefixed scheme to make ids sortable
+or traceable. Ids must be **unique** — collisions alias distinct items in the store.
+
 ## Default instance + top-level exports
 
 The module exports a default registry-less system (`autoStart: false`, so a bare import
@@ -742,11 +885,13 @@ algorithms, every tunable constant) lives in
 
 ## Gotchas / constraints
 
-- **Group-result type is a sound approximation.** Awaiting a handle is typed
-  `GroupResult<Defs>` = the union of every registered work's **non-void** output
-  (`NonVoidUnion<OutputOf<Defs[number]>>`). The actual runtime value is whatever the last
-  `ctx.setResult(...)` recorded — the type can't know which member it is. Treat it as a
-  union and narrow, or use `.result()` for a precisely-typed single-item output.
+- **Group-result type is structural, but still a union.** Awaiting a handle is typed
+  `GroupOfWork<root>` — the union the root work **structurally** contributes (its own
+  `ctx.result` value plus everything it `ctx.queue`s / `.next`s, transitively), **not** the
+  registry-wide union. The actual runtime value is the **last contributor to finish** (or a
+  `{ final }`/`{ append }` result) — the type can't know which member it is, so treat it as
+  a union and narrow, or use `.result()` for a precisely-typed single-item output. A work
+  that returns `ctx.queue(...)` delegates, so its `.result()` is `void`.
 - **At-least-once semantics.** An item can be delivered more than once (lease expiry,
   redelivery). Handlers should be **idempotent**, or guard side effects with `ctx.claim`.
 - **`increment` and non-atomic fallback.** Without a real atomic `Store.increment`, the

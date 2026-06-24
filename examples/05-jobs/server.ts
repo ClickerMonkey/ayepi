@@ -38,7 +38,7 @@ const setProgress = (jobId: string, pct: number, result: number | null): void =>
  * after each step, and **return** the final total. `input.jobId` ties it back to the record
  * the HTTP handler created so the bridge can emit per-job events.
  */
-const compute = defineWork('compute', async (input: { jobId: string; n: number }): Promise<number> => {
+const compute = defineWork('compute', async (input: { jobId: string; n: number }, ctx) => {
   let total = 0;
   for (let step = 1; step <= input.n; step++) {
     total += step;
@@ -47,7 +47,7 @@ const compute = defineWork('compute', async (input: { jobId: string; n: number }
     const done = step === input.n;
     setProgress(input.jobId, pct, done ? total : null); // live progress; result only on the final tick
   }
-  return total;
+  return ctx.result(total);
 });
 
 // Bundled in-memory backend, zero-config. Started/stopped by the `@ayepi/updown` lifecycle below.

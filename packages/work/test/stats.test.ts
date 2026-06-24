@@ -13,7 +13,7 @@ const csum = (m: Metrics, name: string, type: string): StatSummary | undefined =
 
 describe('per-type stats — metrics over @ayepi/core', () => {
   it('records counters, gauges, and timing summaries on success', async () => {
-    const job = defineWork('s', (i: { n: number }) => i.n * 2);
+    const job = defineWork('s', (i: { n: number }, ctx) => ctx.result(i.n * 2));
     const w = createWork({ work: [job] as const, ...fast });
     try {
       expect(await w.enqueue(job({ n: 2 })).result()).toBe(4);
@@ -72,10 +72,10 @@ describe('per-type stats — metrics over @ayepi/core', () => {
 
   it('counts a deferral + delay_time without counting a retry', async () => {
     let calls = 0;
-    const job = defineWork('d', () => {
+    const job = defineWork('d', (_i: unknown, ctx) => {
       calls++;
       if (calls === 1) {throw new WorkDelayError({ delay: 15 });}
-      return 'ok';
+      return ctx.result('ok');
     });
     const w = createWork({ work: [job] as const, ...fast });
     try {
@@ -104,7 +104,7 @@ describe('per-type stats — metrics over @ayepi/core', () => {
       ack: () => {},
       fail: () => {},
     };
-    const noop = defineWork('noop', () => {});
+    const noop = defineWork('noop', (_i: unknown, ctx) => ctx.void());
     const w = createWork({ work: [noop] as const, queue: q, store: memoryStore(), pubsub: memoryPubSub(), ...fast });
     try {
       await wait(30);
@@ -121,9 +121,9 @@ describe('per-type stats — metrics over @ayepi/core', () => {
     const gate = new Promise<void>((r) => {
       release = r;
     });
-    const job = defineWork('slow', async () => {
+    const job = defineWork('slow', async (_i: unknown, ctx) => {
       await gate;
-      return 1;
+      return ctx.result(1);
     });
     const w = createWork({ work: [job] as const, ...fast });
     try {
@@ -144,7 +144,7 @@ describe('per-type stats — metrics over @ayepi/core', () => {
   });
 
   it('exposes a flat stats() list and renders Prometheus text', async () => {
-    const job = defineWork('p', () => 1);
+    const job = defineWork('p', (_i: unknown, ctx) => ctx.result(1));
     const w = createWork({ work: [job] as const, ...fast });
     try {
       await w.enqueue(job({})).result();
@@ -162,7 +162,7 @@ describe('per-type stats — metrics over @ayepi/core', () => {
   });
 
   it('notifies metrics subscribers when stats change', async () => {
-    const job = defineWork('sub', () => 1);
+    const job = defineWork('sub', (_i: unknown, ctx) => ctx.result(1));
     const w = createWork({ work: [job] as const, ...fast });
     const names = new Set<string>();
     const off = w.metrics.subscribe((changed) => {
@@ -181,7 +181,7 @@ describe('per-type stats — metrics over @ayepi/core', () => {
 
   it('produces quantiles when given a quantile-enabled registry, and exposes it back', async () => {
     const metrics = createMetrics({ quantiles: [0.5, 0.95] });
-    const job = defineWork('q', (i: { d: number }) => new Promise<number>((r) => setTimeout(() => r(i.d), i.d)));
+    const job = defineWork('q', (i: { d: number }, ctx) => new Promise<number>((r) => setTimeout(() => r(i.d), i.d)).then((n) => ctx.result(n)));
     const w = createWork({ work: [job] as const, ...fast, metrics });
     try {
       await Promise.all([0, 5, 10, 15, 20].map((d) => w.enqueue(job({ d })).result()));
@@ -196,7 +196,7 @@ describe('per-type stats — metrics over @ayepi/core', () => {
   });
 
   it('keeps stats independently per type', async () => {
-    const a = defineWork('ta', () => 1);
+    const a = defineWork('ta', (_i: unknown, ctx) => ctx.result(1));
     const b = defineWork('tb', () => Promise.reject(new Error('nope')), { retry: { attempts: 1 } });
     const w = createWork({ work: [a, b] as const, ...fast });
     try {

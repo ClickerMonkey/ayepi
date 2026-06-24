@@ -199,7 +199,7 @@ shards by type:
 import { createWork, memoryBackend, defineWork } from '@ayepi/work'
 
 const backend = memoryBackend()
-const add = defineWork('add', (i: { a: number; b: number }) => i.a + i.b)
+const add = defineWork('add', (i: { a: number; b: number }, ctx) => ctx.result(i.a + i.b))
 
 const podA = createWork({ ...backend, work: [add] as const }) // share one backend
 const podB = createWork({ ...backend, work: [add] as const }) // = two pods
@@ -275,7 +275,7 @@ const v = defaultCodec.parse(s) // { when: Date, n: 10n, tags: Set }
 Set a global codec on `createWork` (`codec`), or a per-type codec on `defineWork`
 (`WorkOptions.codec`, which wins for that type). The per-type codec is used to encode/decode
 that type's input and `.result()` output; the **global** codec is always used for the
-group result (`ctx.setResult` / group `.group()`).
+group result (the value a `ctx.result(...)` contributes, read via `.group()`).
 
 ```ts
 import { createWork, defineWork, defaultCodec } from '@ayepi/work'
@@ -292,8 +292,8 @@ const w = createWork({ work: [job] as const, codec: defaultCodec }) // global fa
 ```
 
 > **Constraint:** whatever codec you use **must** round-trip every value a handler
-> receives as input or returns as output (and every `ctx.setResult` value, via the global
-> codec). A value the codec can't represent will be lost or corrupted across the queue.
+> receives as input or contributes via `ctx.result(...)` (the group value goes through the
+> global codec). A value the codec can't represent will be lost or corrupted across the queue.
 
 ---
 

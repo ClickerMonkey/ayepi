@@ -7,7 +7,7 @@ const fast = { pollInterval: 5, visibility: 5000, heartbeat: 2000 } as const;
 
 describe('@ayepi/work engine', () => {
   it('enqueues and resolves the item result with .result()', async () => {
-    const add = defineWork('add', (i: { a: number; b: number }) => i.a + i.b);
+    const add = defineWork('add', (i: { a: number; b: number }, ctx) => ctx.result(i.a + i.b));
     const w = createWork({ work: [add] as const, ...fast });
     try {
       expect(await w.enqueue(add({ a: 2, b: 3 })).result()).toBe(5);
@@ -17,11 +17,11 @@ describe('@ayepi/work engine', () => {
     }
   });
 
-  it('awaiting the handle resolves the group result set via ctx.setResult', async () => {
-    const child = defineWork('child', (i: { n: number }) => i.n * 2);
+  it('awaiting the handle resolves the group result a parent locks via ctx.result({ final })', async () => {
+    const child = defineWork('child', (i: { n: number }, ctx) => ctx.result(i.n * 2));
     const parent = defineWork('parent', (i: { n: number }, ctx) => {
-      const cid = ctx.queue(child({ n: i.n }));
-      ctx.setResult({ done: true, cid });
+      const c = child({ n: i.n });
+      return ctx.queue([c, ctx.result({ done: true, cid: c.id }, { final: true })]); // final ⇒ the child can't overwrite it
     });
     const w = createWork({ work: [child, parent] as const, ...fast });
     try {
@@ -35,18 +35,15 @@ describe('@ayepi/work engine', () => {
 
   it('links child work into the same group (group waits for children)', async () => {
     const order: string[] = [];
-    const leaf = defineWork('leaf', async (i: { id: string }) => {
+    const leaf = defineWork('leaf', async (i: { id: string }, ctx) => {
       order.push(`leaf:${i.id}`);
+      return ctx.void();
     });
-    const root = defineWork('root', (_i: unknown, ctx) => {
-      ctx.queue(leaf({ id: 'a' }));
-      ctx.queue(leaf({ id: 'b' }));
-      ctx.setResult('root-done');
-    });
+    const root = defineWork('root', (_i: unknown, ctx) => ctx.queue([leaf({ id: 'a' }), leaf({ id: 'b' }), ctx.result('root-done')]));
     const w = createWork({ work: [leaf, root] as const, ...fast });
     try {
       const result = await w.enqueue(root({}));
-      expect(result).toBe('root-done');
+      expect(result).toBe('root-done'); // the only non-void contributor
       expect(order.sort()).toEqual(['leaf:a', 'leaf:b']); // both children ran before group settled
     } finally {
       await w.stop();
@@ -57,10 +54,10 @@ describe('@ayepi/work engine', () => {
     let attempts = 0;
     const flaky = defineWork(
       'flaky',
-      (i: { ok: number }) => {
+      (i: { ok: number }, ctx) => {
         attempts++;
         if (attempts < i.ok) {throw new Error('not yet');}
-        return attempts;
+        return ctx.result(attempts);
       },
       { retry: { attempts: 5, base: 5, factor: 1, jitter: 0 } },
     );
@@ -92,11 +89,12 @@ describe('@ayepi/work engine', () => {
     let peak = 0;
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
-    const slow = defineWork('slow', async () => {
+    const slow = defineWork('slow', async (_i: unknown, ctx) => {
       inFlight++;
       peak = Math.max(peak, inFlight);
       await gate;
       inFlight--;
+      return ctx.void();
     });
     const w = createWork({ work: [slow] as const, ...fast, doer: priorityDoer({ max: 2 }) });
     try {
@@ -115,8 +113,9 @@ describe('@ayepi/work engine', () => {
   it('exposes active() for polled-and-accepted work', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
-    const hold = defineWork('hold', async () => {
+    const hold = defineWork('hold', async (_i: unknown, ctx) => {
       await gate;
+      return ctx.void();
     });
     const w = createWork({ work: [hold] as const, ...fast, doer: priorityDoer({ max: 2 }) });
     try {
@@ -138,7 +137,7 @@ describe('@ayepi/work engine', () => {
 
   it('emits lifecycle events with timestamps', async () => {
     const events: WorkEvent[] = [];
-    const ping = defineWork('ping', () => 'pong');
+    const ping = defineWork('ping', (_i: unknown, ctx) => ctx.result('pong'));
     const w = createWork({ work: [ping] as const, ...fast, onEvent: (e) => events.push(e) });
     try {
       await w.enqueue(ping({})).result();
@@ -161,7 +160,7 @@ describe('@ayepi/work engine', () => {
 
   it('fires per-type onEvent alongside the global one', async () => {
     const typed: string[] = [];
-    const ping = defineWork('ping', () => 'pong', { onEvent: (e) => typed.push(e.kind) });
+    const ping = defineWork('ping', (_i: unknown, ctx) => ctx.result('pong'), { onEvent: (e) => typed.push(e.kind) });
     const w = createWork({ work: [ping] as const, ...fast });
     try {
       await w.enqueue(ping({})).result();
@@ -174,7 +173,7 @@ describe('@ayepi/work engine', () => {
   });
 
   it('serializes instance options: delay sets startAt = queueAt + delay', async () => {
-    const at = defineWork('at', () => 'ok');
+    const at = defineWork('at', (_i: unknown, ctx) => ctx.result('ok'));
     const w = createWork({ work: [at] as const, ...fast });
     try {
       const h = w.enqueue(at({}), { delay: 40 });
@@ -269,15 +268,12 @@ describe('@ayepi/work engine', () => {
   });
 
   it('skipQueue runs the first attempt in-process (no queue hop)', async () => {
-    const echo = defineWork('echo', (i: { v: string }, ctx) => {
-      ctx.setResult({ echoed: i.v });
-      return i.v;
-    });
+    const echo = defineWork('echo', (i: { v: string }, ctx) => ctx.result(i.v));
     const w = createWork({ work: [echo] as const, ...fast });
     try {
       const h = w.enqueue(echo({ v: 'hi' }), { skipQueue: true });
-      expect(await h.result()).toBe('hi');
-      expect(await h.group()).toEqual({ echoed: 'hi' });
+      expect(await h.result()).toBe('hi'); // a leaf's self value is also its group contribution
+      expect(await h.group()).toBe('hi');
       expect((w.backend.queue as MemoryQueue).size()).toBe(0); // happy path never touched the durable queue
     } finally {
       await w.stop();
@@ -293,7 +289,7 @@ describe('@ayepi/work engine', () => {
         tries++;
         attempts.push(ctx.attempt);
         if (tries < 2) {throw new Error('retry me');}
-        return i.n * 2;
+        return ctx.result(i.n * 2);
       },
       { skipQueue: true, retry: { attempts: 3, base: 2, jitter: 0 } },
     );
@@ -309,9 +305,7 @@ describe('@ayepi/work engine', () => {
 
   it('invokes unhandledWorkGroup only when nobody awaited the group', async () => {
     const orphans: string[] = [];
-    const fire = defineWork('fire', (_i: unknown, ctx) => {
-      ctx.setResult('result');
-    });
+    const fire = defineWork('fire', (_i: unknown, ctx) => ctx.result('result'));
     const w = createWork({ work: [fire] as const, ...fast, unhandledWorkGroup: (info) => orphans.push(info.groupId) });
     try {
       const handle = w.enqueue(fire({})); // never awaited

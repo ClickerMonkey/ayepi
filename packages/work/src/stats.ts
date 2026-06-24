@@ -29,6 +29,7 @@ export const WORK_METRICS = {
   retried: 'work.retried',
   deferred: 'work.deferred',
   rescheduled: 'work.rescheduled',
+  expired: 'work.expired',
   active: 'work.active',
   pending: 'work.pending',
   running: 'work.running',
@@ -55,6 +56,7 @@ interface TypeHandles {
   readonly retried: Counter;
   readonly deferred: Counter;
   readonly rescheduled: Counter;
+  readonly expired: Counter;
   readonly active: Gauge;
   readonly pending: Gauge;
   readonly running: Gauge;
@@ -90,6 +92,8 @@ export interface WorkStats {
   failed(type: string, at: number, runMs: number | undefined, totalMs: number, attempt: number): void;
   /** A failure re-enqueued with `attempt + 1`. */
   retried(type: string): void;
+  /** An item expired past its deadline (terminal, no further retries). */
+  expired(type: string): void;
   /** A handler/classifier reschedule (attempt unchanged); `delayMs` is the horizon. */
   deferred(type: string, delayMs: number): void;
   /** An early-arrival re-push (not-yet-due item); `delayMs` is the horizon. */
@@ -112,6 +116,7 @@ export const createWorkStats = (metrics: Metrics = createMetrics()): WorkStats =
       retried: metrics.counter(WORK_METRICS.retried, l, { description: 'attempt-advancing retries' }),
       deferred: metrics.counter(WORK_METRICS.deferred, l, { description: 'handler/classifier reschedules' }),
       rescheduled: metrics.counter(WORK_METRICS.rescheduled, l, { description: 'early-arrival re-pushes' }),
+      expired: metrics.counter(WORK_METRICS.expired, l, { description: 'items expired past their deadline' }),
       active: metrics.gauge(WORK_METRICS.active, l, { description: 'items in flight (pending + running)' }),
       pending: metrics.gauge(WORK_METRICS.pending, l, { description: 'items admitted, awaiting a doer slot' }),
       running: metrics.gauge(WORK_METRICS.running, l, { description: 'items executing' }),
@@ -175,6 +180,7 @@ export const createWorkStats = (metrics: Metrics = createMetrics()): WorkStats =
       h.lastFailed.set(at);
     },
     retried: (type) => void handles(type).retried.inc(),
+    expired: (type) => void handles(type).expired.inc(),
     deferred: (type, delayMs) => {
       const h = handles(type);
       h.deferred.inc();

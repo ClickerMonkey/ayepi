@@ -57,7 +57,7 @@ describe('failure routing — RetryAbort, abort, rate-limit deferral', () => {
         calls++;
         attempts.push(ctx.attempt);
         if (calls === 1) {throw Object.assign(new Error('rate limited'), { status: 429 });}
-        return 'ok';
+        return ctx.result('ok');
       },
       { retry: { attempts: 2 }, onFailure: (e) => (statusOf(e) === 429 ? { delay: 15 } : 'retry') },
     );
@@ -76,10 +76,10 @@ describe('failure routing — RetryAbort, abort, rate-limit deferral', () => {
     let calls = 0;
     const job = defineWork(
       'rt',
-      () => {
+      (_i: unknown, ctx) => {
         calls++;
         if (calls === 1) {throw new Error('later');}
-        return calls;
+        return ctx.result(calls);
       },
       { onFailure: () => ({ runAt: Date.now() + 15 }) },
     );

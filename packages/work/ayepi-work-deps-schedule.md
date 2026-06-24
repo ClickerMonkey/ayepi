@@ -24,10 +24,15 @@ fires (queues its dependents, once) or **re-queues itself** with a small delay t
 again later. It never holds a worker slot waiting, so a backlog of dependencies can't
 starve other work.
 
+> **Prefer the native `.next` chain** ([below](#native-dependencies--next)) when you're
+> building a workflow inside a handler — `ctx.queue([a, b]).next([c], 'all-success')` is the
+> ergonomic form and widens the group type by `c`'s contribution. Reach for `dependency(...)`
+> directly when you want to enqueue a standalone gate (e.g. alongside works at the top level).
+
 ### `dependency(opts)`
 
 ```ts
-function dependency(opts: DependencyOptions): Work<'@work/dependency', void>
+function dependency(opts: DependencyOptions): Work<DEPENDENCY_TYPE, void, void>
 
 interface DependencyOptions {
   readonly on: readonly (string | Work)[]   // works (or their ids) to wait on
@@ -81,9 +86,9 @@ resolves once its queued dependents (in the same group) finish:
 ```ts
 import { defineWork, createWork, dependency } from '@ayepi/work'
 
-const stepA = defineWork('stepA', () => 'a')
-const stepB = defineWork('stepB', () => 'b')
-const finalize = defineWork('finalize', () => { /* runs once both steps succeed */ })
+const stepA = defineWork('stepA', (_i, ctx) => ctx.result('a'))
+const stepB = defineWork('stepB', (_i, ctx) => ctx.result('b'))
+const finalize = defineWork('finalize', (_i, ctx) => ctx.void()) // runs once both steps succeed
 
 const w = createWork({ work: [stepA, stepB, finalize] as const })
 
@@ -100,13 +105,22 @@ const gate = w.enqueue(dependency({
 await gate // settles after the queued finalize() completes
 ```
 
-You can also queue everything together inside a handler:
+You can also queue everything together inside a handler — **return** the result so it runs
+(and so the group type reflects it):
 
 ```ts
 const root = defineWork('root', (_i, ctx) => {
   const a = stepA(), b = stepB()
-  ctx.queue([a, b, dependency({ on: [a, b], queue: [finalize()], config: 'all-success' })])
+  return ctx.queue([a, b, dependency({ on: [a, b], queue: [finalize()], config: 'all-success' })])
 })
+```
+
+But the **native `.next` chain** says the same thing more directly (and types the group):
+
+```ts
+const root = defineWork('root', (_i, ctx) =>
+  ctx.queue([stepA(), stepB()]).next([finalize()], 'all-success'),
+)
 ```
 
 ### Timeouts
@@ -137,6 +151,41 @@ w.enqueue(dependency({ on: ['never-runs'], queue: [after({})], config: 'all-succ
 
 Exported dependency symbols: `dependency`, `conditionMet`, `DEPENDENCY_TYPE`, and the
 `DependencyOptions` type.
+
+---
+
+## Native dependencies — `.next`
+
+A `WorkResult` (what a handler returns) has a **`.next`** method — the ergonomic, typed form
+of a fan-in `dependency`. It queues the next works once the works the prior result queued
+satisfy a condition, and **widens the group type** by what those next works contribute:
+
+```ts
+next<Ns>(next: Ns, condition?: DependencyCondition, options?: WorkInstanceOptions): WorkResult<S, G | GroupOf<Ns>>
+```
+
+```ts
+const fetch = defineWork('fetch', (i: { id: string }, ctx) => ctx.result(load(i.id)))   // string
+const report = defineWork('report', (_i, ctx) => ctx.result(makeReport()))              // Report
+const flow = defineWork('flow', (i: { ids: string[] }, ctx) =>
+  ctx.queue(i.ids.map((id) => fetch({ id })))      // run all fetches in the group …
+    .next([report({})], 'all-success'),            // … then report once they all succeed
+)
+// enqueue(flow(...)).group()  →  string | Report   (the structural union)
+```
+
+- The method is **`.next`**, *not* `.then` — a `then` member would make the `WorkResult` a
+  *thenable*, and the engine's `Promise.resolve(...)` of the handler's return would try to
+  adopt/await it.
+- `condition` defaults to `'all-success'` and accepts the full `DependencyCondition` above.
+- `.next` **chains**: `ctx.queue([a]).next([b], cond).next([c], cond2)` runs `c` after `b`'s
+  cohort satisfies `cond2`. Each link is a real `dependency` work under the hood (so it's
+  durable and fires exactly once), with the prior link's queued works as its `on` set.
+- Works queued by a fired `.next` (or `dependency`) see `ctx.dependents` = the ids that gate
+  was waiting `on`; works queued by `ctx.queue` see `ctx.parent` = the queuing work's id.
+- `options` is the usual `WorkInstanceOptions` (e.g. `{ priority }`) applied to the next
+  works. A `.next` you build but **don't return** trips strict-return (see
+  [the handler contract](./ayepi-work.md#the-handler-contract--returning-a-workresult)).
 
 ---
 
@@ -232,9 +281,9 @@ indefinitely (poll-style "not ready yet, try me later"):
 ```ts
 import { WorkDelayError } from '@ayepi/work'
 
-const poll = defineWork('poll', async (input) => {
+const poll = defineWork('poll', async (input, ctx) => {
   if (!(await upstreamReady())) throw new WorkDelayError({ delay: 5 * 60_000 }) // re-run in 5 min, same attempt
-  return doWork(input)
+  return ctx.result(await doWork(input))
 })
 ```
 

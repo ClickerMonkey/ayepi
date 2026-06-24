@@ -47,7 +47,7 @@ describe('lifecycle ownership — no leaked state', () => {
         throw new Error('push fail');
       },
     };
-    const job = defineWork('j', () => 1);
+    const job = defineWork('j', (_i: unknown, ctx) => ctx.result(1));
     const w = createWork({ work: [job] as const, queue, store, pubsub: base.pubsub, autoStart: false });
     try {
       await expect(w.enqueue(job({}))).rejects.toThrow('push fail');
@@ -59,7 +59,7 @@ describe('lifecycle ownership — no leaked state', () => {
 
   it('releases the claim if the doer rejects the handoff synchronously (queued path)', async () => {
     const phases: string[] = [];
-    const job = defineWork('dj', () => 1, { doer: throwingDoer() });
+    const job = defineWork('dj', (_i: unknown, ctx) => ctx.result(1), { doer: throwingDoer() });
     const w = createWork({ work: [job] as const, ...fast, onError: (_e, phase) => phases.push(phase) });
     try {
       w.enqueue(job({}));
@@ -72,7 +72,7 @@ describe('lifecycle ownership — no leaked state', () => {
   });
 
   it('skipQueue: releases claim + rolls back the hold when the doer rejects the handoff', async () => {
-    const job = defineWork('sj', () => 1, { skipQueue: true, doer: throwingDoer() });
+    const job = defineWork('sj', (_i: unknown, ctx) => ctx.result(1), { skipQueue: true, doer: throwingDoer() });
     const w = createWork({ work: [job] as const, ...fast });
     try {
       await expect(w.enqueue(job({})).result()).rejects.toThrow('doer boom'); // the handoff failure surfaces
@@ -83,7 +83,7 @@ describe('lifecycle ownership — no leaked state', () => {
   });
 
   it('skipQueue: dead-letters an unknown work type', async () => {
-    const known = defineWork('known', () => 1);
+    const known = defineWork('known', (_i: unknown, ctx) => ctx.result(1));
     const w = createWork({ work: [known] as const, ...fast });
     try {
       await expect(w.enqueue('mystery' as never, {} as never, { skipQueue: true }).result()).rejects.toThrow('unknown work type');
@@ -107,7 +107,7 @@ describe('lifecycle ownership — no leaked state', () => {
         return base.store.increment!(key, by, ttl);
       },
     };
-    const job = defineWork('ss', () => 1, { skipQueue: true });
+    const job = defineWork('ss', (_i: unknown, ctx) => ctx.result(1), { skipQueue: true });
     const w = createWork({ work: [job] as const, queue: base.queue, store, pubsub: base.pubsub, ...fast });
     try {
       await expect(w.enqueue(job({})).result()).rejects.toThrow('set fail');
@@ -147,7 +147,7 @@ describe('lifecycle ownership — no leaked state', () => {
         throw new Error('push fail');
       },
     };
-    const job = defineWork('jj', () => 1);
+    const job = defineWork('jj', (_i: unknown, ctx) => ctx.result(1));
     const w = createWork({ work: [job] as const, queue, store, pubsub: base.pubsub, autoStart: false, onError: (_e, phase) => phases.push(phase) });
     try {
       await expect(w.enqueue(job({}))).rejects.toThrow('push fail'); // the original error, not the rollback's

@@ -17,7 +17,7 @@ describe('WorkDelayError / runAt scheduling', () => {
       calls++;
       attempts.push(ctx.attempt);
       if (calls === 1) {throw new WorkDelayError({ delay: 15 });}
-      return 'ok';
+      return ctx.result('ok');
     });
     const w = createWork({ work: [poll] as const, ...fast, onEvent: (e) => events.push(e.kind) });
     try {
@@ -32,10 +32,10 @@ describe('WorkDelayError / runAt scheduling', () => {
 
   it('a handler throwing WorkDelayError({ runAt }) reschedules to the absolute time', async () => {
     let calls = 0;
-    const poll = defineWork('pollAbs', () => {
+    const poll = defineWork('pollAbs', (_i: unknown, ctx) => {
       calls++;
       if (calls === 1) {throw new WorkDelayError({ runAt: Date.now() + 15 });}
-      return calls;
+      return ctx.result(calls);
     });
     const w = createWork({ work: [poll] as const, ...fast });
     try {
@@ -48,9 +48,9 @@ describe('WorkDelayError / runAt scheduling', () => {
   it('enqueue with { runAt } does not run before the scheduled time', async () => {
     const t0 = Date.now();
     let ranAt = 0;
-    const job = defineWork('job', () => {
+    const job = defineWork('job', (_i: unknown, ctx) => {
       ranAt = Date.now();
-      return 'done';
+      return ctx.result('done');
     });
     const w = createWork({ work: [job] as const, ...fast });
     try {
@@ -100,7 +100,7 @@ describe('WorkDelayError / runAt scheduling', () => {
       ack: () => void (acked = true),
       fail: () => void (failed = true),
     };
-    const noop = defineWork('noop', () => void (ran = true));
+    const noop = defineWork('noop', (_i: unknown, ctx) => (ran = true, ctx.void()));
     const w = createWork({ work: [noop] as const, queue: q, store: memoryStore(), pubsub: memoryPubSub(), ...fast });
     try {
       await wait(30);
@@ -127,7 +127,7 @@ describe('WorkDelayError / runAt scheduling', () => {
       fail: () => {},
       deadLetter: (body: string) => void dead.push(body),
     };
-    const noop = defineWork('noop2', () => {});
+    const noop = defineWork('noop2', (_i: unknown, ctx) => ctx.void());
     const w = createWork({ work: [noop] as const, queue: q, store: memoryStore(), pubsub: memoryPubSub(), pollInterval: 5, visibility: 5000, heartbeat: 2000 });
     try {
       await wait(60);
@@ -146,8 +146,8 @@ describe('per-type queues + fair polling', () => {
     const qB = memoryQueue();
     let ranA = false;
     let ranB = false;
-    const a = defineWork('a', () => void (ranA = true), { queue: qA });
-    const b = defineWork('b', () => void (ranB = true), { queue: qB });
+    const a = defineWork('a', (_i: unknown, ctx) => (ranA = true, ctx.void()), { queue: qA });
+    const b = defineWork('b', (_i: unknown, ctx) => (ranB = true, ctx.void()), { queue: qB });
     const w = createWork({ work: [a, b] as const, queue: qA, store: memoryStore(), pubsub: memoryPubSub(), ...fast });
     try {
       w.enqueue(a({}));
@@ -164,7 +164,7 @@ describe('per-type queues + fair polling', () => {
   it('dead-letters an unknown-type item on the queue it came from (source-queue threading)', async () => {
     const qDefault: MemoryQueue = memoryQueue();
     const qOther: MemoryQueue = memoryQueue();
-    const known = defineWork('known', () => 'ok', { queue: qOther });
+    const known = defineWork('known', (_i: unknown, ctx) => ctx.result('ok'), { queue: qOther });
     const w = createWork({ work: [known] as const, queue: qDefault, store: memoryStore(), pubsub: memoryPubSub(), ...fast });
     try {
       qOther.push(envBody({ id: 'u', type: 'mystery', startAt: 0 })); // an unknown type, on the non-default queue
@@ -178,7 +178,7 @@ describe('per-type queues + fair polling', () => {
   });
 
   it('keeps pulling a saturated queue until it is drained', async () => {
-    const job = defineWork('job2', (i: { n: number }) => i.n);
+    const job = defineWork('job2', (i: { n: number }, ctx) => ctx.result(i.n));
     const w = createWork({ work: [job] as const, ...fast });
     try {
       const results = await Promise.all(Array.from({ length: 20 }, (_, n) => w.enqueue(job({ n })).result()));
@@ -200,7 +200,7 @@ describe('per-type queues + fair polling', () => {
       ack: () => {},
       fail: () => {},
     };
-    const noop = defineWork('noop', () => {});
+    const noop = defineWork('noop', (_i: unknown, ctx) => ctx.void());
     const w = createWork({ work: [noop] as const, queue: q, store: memoryStore(), pubsub: memoryPubSub(), pollInterval: 10, visibility: 5000, heartbeat: 2000 });
     try {
       await wait(90);
@@ -215,7 +215,7 @@ describe('dynamic backpressure', () => {
   it('pauses taking work while the hook asks to wait, even with free capacity', async () => {
     let paused = true;
     let ran = false;
-    const job = defineWork('bp', () => void (ran = true));
+    const job = defineWork('bp', (_i: unknown, ctx) => (ran = true, ctx.void()));
     const w = createWork({ work: [job] as const, ...fast, backpressure: () => (paused ? 30 : 0) });
     try {
       w.enqueue(job({}));
@@ -231,7 +231,7 @@ describe('dynamic backpressure', () => {
 
   it('proceeds when backpressure returns nothing; a throwing backpressure is reported and recovers', async () => {
     let ranA = false;
-    const a = defineWork('bpa', () => void (ranA = true));
+    const a = defineWork('bpa', (_i: unknown, ctx) => (ranA = true, ctx.void()));
     const wA = createWork({ work: [a] as const, ...fast, backpressure: () => undefined });
     try {
       await wA.enqueue(a({})).result();
@@ -242,7 +242,7 @@ describe('dynamic backpressure', () => {
 
     const phases: string[] = [];
     let calls = 0;
-    const b = defineWork('bpb', () => 'ok');
+    const b = defineWork('bpb', (_i: unknown, ctx) => ctx.result('ok'));
     const wB = createWork({
       work: [b] as const,
       ...fast,
