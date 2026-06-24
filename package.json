@@ -14,8 +14,9 @@
     "publint": "pnpm -r publint",
     "version:show": "node scripts/version.mjs",
     "version:set": "node scripts/version.mjs",
+    "publish:all": "pnpm -r publish --access public --no-git-checks",
     "release:dry": "pnpm -r build && pnpm -r publint && pnpm -r publish --dry-run --no-git-checks",
-    "release": "pnpm -r build && pnpm -r publint && pnpm -r publish --access public"
+    "release": "pnpm -r build && pnpm -r publint && pnpm run publish:all"
   },
   "devDependencies": {
     "@stylistic/eslint-plugin": "^2.13.0",
