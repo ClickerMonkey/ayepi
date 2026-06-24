@@ -43,6 +43,15 @@ const url = await presign.presignDownload('reports/2026.csv', { expiresIn: 60 })
   filesystem store has no HTTP surface, so `@ayepi/files/server` (`mountFiles` /
   `createFilesHandler`) signs short-lived HMAC tokens and serves the matching GET/PUT.
 
+## For AI coding agents
+
+This package ships dense, machine-oriented reference docs written for **AI coding agents**
+(Claude Code, Cursor, and the like) to understand and drive the package — point your agent at them:
+
+- [`ayepi-files.md`](./ayepi-files.md)
+
+They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/files) and are **not** shipped in the npm tarball.
+
 ## License
 
 MIT © Philip Diffenderfer

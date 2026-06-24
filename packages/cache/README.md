@@ -76,3 +76,13 @@ requests pass through uncached. Replays are emitted at status 200.
 
 See **[`ayepi-cache.md`](./ayepi-cache.md)** for the full reference, and
 [`examples/09-cache`](../../examples/09-cache) for a runnable demo.
+
+## For AI coding agents
+
+This package ships dense, machine-oriented reference docs written for **AI coding agents**
+(Claude Code, Cursor, and the like) to understand and drive the package — point your agent at them:
+
+- [`ayepi-cache.md`](./ayepi-cache.md)
+
+They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/cache) and are **not** shipped in the npm tarball.
+

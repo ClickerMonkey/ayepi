@@ -136,6 +136,16 @@ rateLimit.server(limit, {
 })
 ```
 
+## For AI coding agents
+
+This package ships dense, machine-oriented reference docs written for **AI coding agents**
+(Claude Code, Cursor, and the like) to understand and drive the package — point your agent at them:
+
+- [`ayepi-rate-stores-doer.md`](./ayepi-rate-stores-doer.md)
+- [`ayepi-rate.md`](./ayepi-rate.md)
+
+They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/rate) and are **not** shipped in the npm tarball.
+
 ## License
 
 MIT © Philip Diffenderfer

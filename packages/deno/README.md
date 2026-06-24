@@ -12,6 +12,15 @@ import { server } from 'npm:@ayepi/core'
 const close = serve(app, { port: 3000, path: '/ws' })
 ```
 
+## For AI coding agents
+
+This package ships dense, machine-oriented reference docs written for **AI coding agents**
+(Claude Code, Cursor, and the like) to understand and drive the package — point your agent at them:
+
+- [`ayepi-deno.md`](./ayepi-deno.md)
+
+They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/deno) and are **not** shipped in the npm tarball.
+
 ## License
 
 MIT © Philip Diffenderfer

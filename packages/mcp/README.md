@@ -34,3 +34,13 @@ const res = await mcp.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
 See [`ayepi-mcp.md`](./ayepi-mcp.md) for the full reference: how inputs become JSON
 Schema, the supported JSON-RPC/MCP methods, filtering/prefixing, and files/streaming
 handling. Cross-linked with [`ayepi-core.md`](./ayepi-core.md).
+
+## For AI coding agents
+
+This package ships dense, machine-oriented reference docs written for **AI coding agents**
+(Claude Code, Cursor, and the like) to understand and drive the package — point your agent at them:
+
+- [`ayepi-mcp.md`](./ayepi-mcp.md)
+
+They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/mcp) and are **not** shipped in the npm tarball.
+

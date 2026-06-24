@@ -199,6 +199,18 @@ establishes log trace context for the downstream chain. `logMiddleware.server(de
 context, logWith? })` — exported from `@ayepi/log/server` — binds it; the `context`
 builder `(ctx, req) => object` lives here, on the server side.
 
+## For AI coding agents
+
+This package ships dense, machine-oriented reference docs written for **AI coding agents**
+(Claude Code, Cursor, and the like) to understand and drive the package — point your agent at them:
+
+- [`ayepi-log-errors-console.md`](./ayepi-log-errors-console.md)
+- [`ayepi-log-middleware.md`](./ayepi-log-middleware.md)
+- [`ayepi-log-transports.md`](./ayepi-log-transports.md)
+- [`ayepi-log.md`](./ayepi-log.md)
+
+They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/log) and are **not** shipped in the npm tarball.
+
 ## License
 
 MIT © Philip Diffenderfer

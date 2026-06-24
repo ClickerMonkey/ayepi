@@ -94,6 +94,15 @@ implement(api).middleware(cache.server(cached, { store: redisCache(redis), ttl: 
 
 `@ayepi/cache` is an **optional, type-only peer dep** — only install it if you use this.
 
+## For AI coding agents
+
+This package ships dense, machine-oriented reference docs written for **AI coding agents**
+(Claude Code, Cursor, and the like) to understand and drive the package — point your agent at them:
+
+- [`ayepi-redis.md`](./ayepi-redis.md)
+
+They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/redis) and are **not** shipped in the npm tarball.
+
 ## License
 
 MIT © Philip Diffenderfer

@@ -71,6 +71,19 @@ setInterval(() => console.log(formatPrometheus(m.list())), 15_000) // scrape/log
 m.subscribe((changed) => pushToStatsd(changed))                    // or push on change (batched)
 ```
 
+## For AI coding agents
+
+This package ships dense, machine-oriented reference docs written for **AI coding agents**
+(Claude Code, Cursor, and the like) to understand and drive the package — point your agent at them:
+
+- [`ayepi-core-client.md`](./ayepi-core-client.md)
+- [`ayepi-core-endpoints.md`](./ayepi-core-endpoints.md)
+- [`ayepi-core-middleware.md`](./ayepi-core-middleware.md)
+- [`ayepi-core-types.md`](./ayepi-core-types.md)
+- [`ayepi-core.md`](./ayepi-core.md)
+
+They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/core) and are **not** shipped in the npm tarball.
+
 ## License
 
 MIT © Philip Diffenderfer

@@ -37,3 +37,13 @@ const res = await app.fetch(new Request('http://x/listUsers?limit=10', { method:
 
 See [`ayepi-mock.md`](./ayepi-mock.md) for the full reference (options, seeding,
 determinism, pagination, overrides, supported zod types, and gotchas).
+
+## For AI coding agents
+
+This package ships dense, machine-oriented reference docs written for **AI coding agents**
+(Claude Code, Cursor, and the like) to understand and drive the package — point your agent at them:
+
+- [`ayepi-mock.md`](./ayepi-mock.md)
+
+They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/mock) and are **not** shipped in the npm tarball.
+

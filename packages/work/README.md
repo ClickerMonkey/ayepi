@@ -190,6 +190,17 @@ const work = createWork({ ...backend, work: [add] as const })
 Non-native values in inputs/outputs (`Date`, `BigInt`, `Map`, `Set`, `undefined`,
 `Error`) round-trip through `defaultCodec`; pass your own `codec` globally or per type.
 
+## For AI coding agents
+
+This package ships dense, machine-oriented reference docs written for **AI coding agents**
+(Claude Code, Cursor, and the like) to understand and drive the package — point your agent at them:
+
+- [`ayepi-work-deps-schedule.md`](./ayepi-work-deps-schedule.md)
+- [`ayepi-work-ports.md`](./ayepi-work-ports.md)
+- [`ayepi-work.md`](./ayepi-work.md)
+
+They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/work) and are **not** shipped in the npm tarball.
+
 ## License
 
 MIT © Philip Diffenderfer
