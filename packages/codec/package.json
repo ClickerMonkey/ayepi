@@ -1,8 +1,20 @@
 {
   "name": "@ayepi/codec",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Rich JSON codec — tagged, reversible serialization of Date, BigInt, Map, Set, undefined, Error, and custom types through JSON.stringify/parse",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/codec"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/codec#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "files": ["dist"],

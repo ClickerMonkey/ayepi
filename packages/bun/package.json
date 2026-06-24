@@ -1,8 +1,20 @@
 {
   "name": "@ayepi/bun",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Bun adapter for @ayepi/core — fetch-native HTTP + native WebSocket, zero dependencies",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/bun"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/bun#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "files": ["dist"],

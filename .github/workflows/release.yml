@@ -1,0 +1,46 @@
+name: Release
+
+# Publish every @ayepi/* package to npm. Trigger by pushing a version tag (e.g. `v0.1.0`)
+# or manually via the Actions tab. pnpm publishes in dependency order, rewrites the
+# `workspace:^` ranges to real versions, and skips any version already on the registry.
+#
+# Requires repo secret NPM_TOKEN (an npm automation token with publish rights on the @ayepi scope).
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (dual ESM/CJS + d.ts)
+        run: pnpm -r build
+
+      - name: Packaging gate (publint)
+        run: pnpm -r publint
+
+      - name: Publish to npm
+        run: pnpm -r publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'

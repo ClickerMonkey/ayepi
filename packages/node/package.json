@@ -1,8 +1,20 @@
 {
   "name": "@ayepi/node",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Node.js (node:http + ws) adapter for @ayepi/core — bridges IncomingMessage ⇄ fetch Request/Response and serves WebSocket upgrades",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/node"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/node#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "files": ["dist"],

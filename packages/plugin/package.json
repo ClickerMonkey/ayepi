@@ -1,8 +1,20 @@
 {
   "name": "@ayepi/plugin",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "A plugin system for @ayepi/core — compose an API from independent plugins (spec + implementation + state service + lifecycle + deps) and install/uninstall them into a running server",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/plugin"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/plugin#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "files": ["dist"],

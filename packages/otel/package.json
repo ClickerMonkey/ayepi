@@ -1,8 +1,20 @@
 {
   "name": "@ayepi/otel",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Observability middleware for @ayepi/core — request/response logging, trace-context enrichment, configurable fields, and per-endpoint overrides",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/otel"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/otel#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "files": ["dist"],

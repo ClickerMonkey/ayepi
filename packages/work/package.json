@@ -1,8 +1,20 @@
 {
   "name": "@ayepi/work",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Type-safe distributed work / job-queue + workflow engine for ayepi — pluggable queue/pubsub/kv ports, in-memory bundled, retries, dependencies, scheduling",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/work"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/work#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "files": ["dist"],

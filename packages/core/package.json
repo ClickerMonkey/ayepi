@@ -1,8 +1,20 @@
 {
   "name": "@ayepi/core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "zod-first, painfully-typed HTTP + WebSocket API library with OpenAPI 3.1 + AsyncAPI 3.0 generation",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/core#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "files": ["dist"],

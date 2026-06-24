@@ -11,7 +11,11 @@
     "lint": "eslint \"packages/**/*.ts\" && node scripts/check-casts.mjs",
     "lint:fix": "eslint \"packages/**/*.ts\" --fix",
     "attw": "pnpm -r attw",
-    "publint": "pnpm -r publint"
+    "publint": "pnpm -r publint",
+    "version:show": "node scripts/version.mjs",
+    "version:set": "node scripts/version.mjs",
+    "release:dry": "pnpm -r build && pnpm -r publint && pnpm -r publish --dry-run --no-git-checks",
+    "release": "pnpm -r build && pnpm -r publint && pnpm -r publish --access public"
   },
   "devDependencies": {
     "@stylistic/eslint-plugin": "^2.13.0",
