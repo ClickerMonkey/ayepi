@@ -17,7 +17,7 @@
  */
 
 import { middleware, ctx } from '@ayepi/core';
-import type { AnyMiddleware, MiddlewareDoc } from '@ayepi/core';
+import type { AnyMiddleware, MiddlewareDoc, MiddlewareDef } from '@ayepi/core';
 import type { JwtPayload, StandardClaims } from './jwt';
 
 /** The OpenAPI security-scheme name this middleware registers. */
@@ -99,15 +99,13 @@ export interface BearerDefOptions<R extends readonly AnyMiddleware[]> {
  */
 export function bearerAuth<Claims extends object, User, const R extends readonly AnyMiddleware[] = readonly []>(
   opts?: BearerDefOptions<R>,
-) {
+): BearerAuthDef<Claims, User, R> {
   const name = opts?.name ?? SCHEME_NAME;
   const doc = opts?.doc ?? BEARER_DOC;
   return middleware(name, { provides: ctx<BearerContext<User, Claims>>(), requires: (opts?.requires ?? []) as R, doc });
 }
 
 /** The def type a {@link bearerAuth} call produces — what `bearerAuth.server` binds against. */
-export type BearerAuthDef<Claims extends object, User, R extends readonly AnyMiddleware[] = readonly []> = ReturnType<
-  typeof bearerAuth<Claims, User, R>
->;
+export type BearerAuthDef<Claims extends object, User, R extends readonly AnyMiddleware[] = readonly []> = MiddlewareDef<BearerContext<User, Claims>, R>;
 
 export type { JwtPayload, StandardClaims };

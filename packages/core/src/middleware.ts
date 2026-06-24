@@ -267,6 +267,19 @@ type Def<M extends AnyMiddleware, O extends readonly AnyMiddleware[], IsLoader e
 };
 
 /**
+ * The type a plain (non-loader) {@link middleware} **def** has — the `Middleware` contract plus the
+ * phantoms its `.server` binding reads. Give a def factory this as an **explicit** return type so its
+ * inferred type stays portable across packages (avoids TS2742 from deep `@ayepi/core` type paths):
+ *
+ * ```ts
+ * export function myMw<const R extends readonly AnyMiddleware[] = readonly []>(): MiddlewareDef<MyCtx, R> {
+ *   return middleware('myMw', { provides: ctx<MyCtx>(), requires: [] as R });
+ * }
+ * ```
+ */
+export type MiddlewareDef<P extends object, R extends readonly AnyMiddleware[] = readonly []> = Def<Middleware<P, R, Simplify<ListLP<R>>>, readonly [], false, z.ZodNever>;
+
+/**
  * The {@link middleware} factory: callable to create a plain middleware **def**,
  * with a {@link MiddlewareFactory.loader | .loader} method for param-loading defs.
  *

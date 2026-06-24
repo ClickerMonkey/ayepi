@@ -34,7 +34,7 @@
  */
 
 import { middleware, ctx } from '@ayepi/core';
-import type { AnyMiddleware, Json, MaybePromise } from '@ayepi/core';
+import type { AnyMiddleware, Json, MaybePromise, MiddlewareDef } from '@ayepi/core';
 import { unlimitedDoer, type Doer, type DoerTaskOptions } from '@ayepi/core/doer';
 
 /* ---- tunable constants ---- */
@@ -238,13 +238,13 @@ export function rateLimitResponse(info: RateLimitInfo, opts: RateLimitResponseOp
  * @typeParam R - inferred from `requires`; their context types flow into the
  *   server-side `key`/`skip`/`message`.
  */
-export function rateLimit<const R extends readonly AnyMiddleware[] = readonly []>(opts?: RateLimitDefOptions<R>) {
+export function rateLimit<const R extends readonly AnyMiddleware[] = readonly []>(opts?: RateLimitDefOptions<R>): RateLimitDef<R> {
   const name = opts?.name ?? 'rateLimit';
   return middleware(name, { provides: ctx<{ ratelimit: RateLimitInfo }>(), requires: (opts?.requires ?? []) as R });
 }
 
 /** The def type a {@link rateLimit} call produces — what `rateLimit.server` binds against. */
-export type RateLimitDef<R extends readonly AnyMiddleware[] = readonly []> = ReturnType<typeof rateLimit<R>>;
+export type RateLimitDef<R extends readonly AnyMiddleware[] = readonly []> = MiddlewareDef<{ ratelimit: RateLimitInfo }, R>;
 
 /* ============================================================================
  * Rate-limited doer — gates task starts through a {@link limiter}.

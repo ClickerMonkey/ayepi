@@ -23,7 +23,7 @@
  */
 
 import { middleware } from '@ayepi/core';
-import type { AnyMiddleware } from '@ayepi/core';
+import type { AnyMiddleware, MiddlewareDef, EmptyObject } from '@ayepi/core';
 
 /**
  * Options for the {@link telemetry} **def** — frontend-safe only.
@@ -50,10 +50,10 @@ export interface TelemetryDefOptions<R extends readonly AnyMiddleware[]> {
  * spec({ endpoints: { ...tel.group({ getUser }) } });
  * ```
  */
-export function telemetry<const R extends readonly AnyMiddleware[] = readonly []>(opts?: TelemetryDefOptions<R>) {
+export function telemetry<const R extends readonly AnyMiddleware[] = readonly []>(opts?: TelemetryDefOptions<R>): TelemetryDef<R> {
   const name = opts?.name ?? 'otel';
   return middleware(name, { requires: (opts?.requires ?? []) as R });
 }
 
 /** The def type a {@link telemetry} call produces — what `telemetry.server` binds against. */
-export type TelemetryDef<R extends readonly AnyMiddleware[] = readonly []> = ReturnType<typeof telemetry<R>>;
+export type TelemetryDef<R extends readonly AnyMiddleware[] = readonly []> = MiddlewareDef<EmptyObject, R>;

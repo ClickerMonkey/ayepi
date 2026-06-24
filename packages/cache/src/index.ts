@@ -33,7 +33,7 @@
  */
 
 import { middleware, ctx } from '@ayepi/core';
-import type { AnyMiddleware, Json, MaybePromise } from '@ayepi/core';
+import type { AnyMiddleware, Json, MaybePromise, MiddlewareDef } from '@ayepi/core';
 
 /* ---- tunable constants ---- */
 /** Default middleware name. */
@@ -322,10 +322,10 @@ export interface CacheDefOptions<R extends readonly AnyMiddleware[]> {
  * @typeParam R - inferred from `requires`; their context types flow into the
  *   server-side `key`/`vary`/`skip`/`shouldCache`.
  */
-export function cache<const R extends readonly AnyMiddleware[] = readonly []>(opts?: CacheDefOptions<R>) {
+export function cache<const R extends readonly AnyMiddleware[] = readonly []>(opts?: CacheDefOptions<R>): CacheDef<R> {
   const name = opts?.name ?? DEFAULT_NAME;
   return middleware(name, { provides: ctx<{ cache: CacheControl }>(), requires: (opts?.requires ?? []) as R });
 }
 
 /** The def type a {@link cache} call produces — what `cache.server` binds against. */
-export type CacheDef<R extends readonly AnyMiddleware[] = readonly []> = ReturnType<typeof cache<R>>;
+export type CacheDef<R extends readonly AnyMiddleware[] = readonly []> = MiddlewareDef<{ cache: CacheControl }, R>;

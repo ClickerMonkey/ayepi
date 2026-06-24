@@ -11,7 +11,7 @@
  */
 
 import { middleware, ctx } from '@ayepi/core';
-import type { AnyMiddleware, MiddlewareDoc } from '@ayepi/core';
+import type { AnyMiddleware, MiddlewareDoc, MiddlewareDef } from '@ayepi/core';
 
 /**
  * The context a {@link basicAuth} middleware contributes to the handler payload.
@@ -64,11 +64,11 @@ export interface BasicDefOptions<R extends readonly AnyMiddleware[]> {
  * }));
  * ```
  */
-export function basicAuth<User, const R extends readonly AnyMiddleware[] = readonly []>(opts?: BasicDefOptions<R>) {
+export function basicAuth<User, const R extends readonly AnyMiddleware[] = readonly []>(opts?: BasicDefOptions<R>): BasicAuthDef<User, R> {
   const name = opts?.name ?? 'basicAuth';
   const doc = opts?.doc ?? BASIC_DOC;
   return middleware(name, { provides: ctx<BasicContext<User>>(), requires: (opts?.requires ?? []) as R, doc });
 }
 
 /** The def type a {@link basicAuth} call produces — what `basicAuth.server` binds against. */
-export type BasicAuthDef<User, R extends readonly AnyMiddleware[] = readonly []> = ReturnType<typeof basicAuth<User, R>>;
+export type BasicAuthDef<User, R extends readonly AnyMiddleware[] = readonly []> = MiddlewareDef<BasicContext<User>, R>;

@@ -20,7 +20,7 @@
  */
 
 /* --- type utilities --- */
-export type { Simplify, MaybePromise, Json } from './types';
+export type { Simplify, MaybePromise, Json, EmptyObject } from './types';
 
 /* --- retry --- */
 export { retry, backoff, RetryAbort, DEFAULT_RETRY_OPTIONS, setDefaultRetryOptions, getDefaultRetryOptions } from './retry';
@@ -42,6 +42,7 @@ export type {
   LoaderFn,
   AnyMiddleware,
   Middleware,
+  MiddlewareDef,
   Stack,
   StackCtx,
   StackLP,

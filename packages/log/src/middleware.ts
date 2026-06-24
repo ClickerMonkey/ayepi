@@ -24,7 +24,7 @@
  */
 
 import { middleware } from '@ayepi/core';
-import type { AnyMiddleware } from '@ayepi/core';
+import type { AnyMiddleware, MiddlewareDef, EmptyObject } from '@ayepi/core';
 
 /**
  * Options for the {@link logMiddleware} **def** — frontend-safe only.
@@ -45,10 +45,10 @@ export interface LogMiddlewareDefOptions<R extends readonly AnyMiddleware[]> {
  *
  * @typeParam R - inferred from `requires`.
  */
-export function logMiddleware<const R extends readonly AnyMiddleware[] = readonly []>(opts?: LogMiddlewareDefOptions<R>) {
+export function logMiddleware<const R extends readonly AnyMiddleware[] = readonly []>(opts?: LogMiddlewareDefOptions<R>): LogMiddlewareDef<R> {
   const name = opts?.name ?? 'log';
   return middleware(name, { requires: (opts?.requires ?? []) as R });
 }
 
 /** The def type a {@link logMiddleware} call produces — what `logMiddleware.server` binds against. */
-export type LogMiddlewareDef<R extends readonly AnyMiddleware[] = readonly []> = ReturnType<typeof logMiddleware<R>>;
+export type LogMiddlewareDef<R extends readonly AnyMiddleware[] = readonly []> = MiddlewareDef<EmptyObject, R>;
