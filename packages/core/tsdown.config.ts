@@ -6,7 +6,7 @@ import { defineConfig } from 'tsdown';
  * primitive (`./doer`). `zod` is a peer dependency and is left external.
  */
 export default defineConfig({
-  entry: ['src/index.ts', 'src/client/index.ts', 'src/doer.ts', 'src/retry.ts'],
+  entry: ['src/index.ts', 'src/client/index.ts', 'src/doer.ts', 'src/retry.ts', 'src/stats.ts'],
   format: ['esm', 'cjs'],
   dts: true,
   clean: true,

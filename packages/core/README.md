@@ -50,6 +50,27 @@ setDefaultRetryOptions({ attempts: 5 })
 const data = await retry((state) => fetchJson(url), { base: 200 })
 ```
 
+## `@ayepi/core/stats`
+
+A tiny, dependency-free metrics primitive — typed, **labelled** measurements you hand to
+whatever you already run (a periodic log, StatsD, Prometheus). Three kinds: **counter**
+(`inc`), **gauge** (`set`/`add`/`max`), and **summary** (`observe` → count/total/min/max/avg,
+plus histogram buckets + approximate quantiles when configured). `createMetrics()` is the
+registry: `list()`/`get()` snapshots, a **coalesced** `subscribe()` for change notifications,
+and `formatPrometheus()` to render the text exposition. `@ayepi/work` records its per-type job
+stats into one of these.
+
+```ts
+import { createMetrics, formatPrometheus } from '@ayepi/core'
+
+const m = createMetrics({ quantiles: [0.5, 0.95, 0.99] })
+m.counter('jobs_done', { type: 'email' }).inc()
+m.summary('job_ms', { type: 'email' }, { unit: 'ms' }).observe(42)
+
+setInterval(() => console.log(formatPrometheus(m.list())), 15_000) // scrape/log loop
+m.subscribe((changed) => pushToStatsd(changed))                    // or push on change (batched)
+```
+
 ## License
 
 MIT © Philip Diffenderfer

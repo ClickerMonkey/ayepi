@@ -26,6 +26,10 @@ export type { Simplify, MaybePromise, Json } from './types';
 export { retry, backoff, RetryAbort, DEFAULT_RETRY_OPTIONS, setDefaultRetryOptions, getDefaultRetryOptions } from './retry';
 export type { RetryOptions, RetryState } from './retry';
 
+/* --- stats / metrics --- */
+export { createMetrics, formatPrometheus, DEFAULT_BUCKETS } from './stats';
+export type { Metrics, MetricsOptions, Counter, Gauge, Summary, StatKind, StatMeta, StatValue, StatSummary, StatBucket, Labels } from './stats';
+
 /* --- path templates --- */
 export type { AnyPathTemplate, PathTemplate, PathPart } from './path';
 export { splitPattern, joinPattern, matchParts, buildParts, path } from './path';

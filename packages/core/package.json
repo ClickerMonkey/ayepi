@@ -47,6 +47,16 @@
         "default": "./dist/retry.cjs"
       }
     },
+    "./stats": {
+      "import": {
+        "types": "./dist/stats.d.ts",
+        "default": "./dist/stats.js"
+      },
+      "require": {
+        "types": "./dist/stats.d.cts",
+        "default": "./dist/stats.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
