@@ -17,7 +17,7 @@
  * ```ts
  * import { defineWork, createWork } from '@ayepi/work'
  *
- * const add = defineWork('add', (i: { a: number; b: number }) => i.a + i.b)
+ * const add = defineWork('add', (i: { a: number; b: number }, ctx) => ctx.result(i.a + i.b))
  * const w = createWork({ work: [add] as const })
  *
  * const sum = await w.enqueue(add({ a: 1, b: 2 })).result() // 3, typed as number
