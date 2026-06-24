@@ -121,12 +121,27 @@ export type IsHttpOnly<E extends AnyEndpoint> = Get<CfgOf<E>, 'httpOnly'> extend
         ? true
         : false;
 
+/** Upload progress for a request body, reported to {@link CallOptsBase.onUploadProgress}. */
+export interface UploadProgress {
+  /** Bytes uploaded so far. */
+  readonly loaded: number;
+  /** Total bytes to upload. */
+  readonly total: number;
+}
+
 /** Options common to every `call()`. */
 export interface CallOptsBase {
   /** Abort signal — cancels the in-flight request (and, over ws, the call). */
   readonly signal?: AbortSignal;
   /** Extra request headers (also used to deliver typed request headers/cookies). */
   readonly headers?: Readonly<Record<string, string>>;
+  /**
+   * Report request-upload progress (e.g. a file/multipart or body POST). When set, that request is
+   * sent via `XMLHttpRequest` (the only transport with upload-progress events) instead of `fetch`, so
+   * it bypasses a custom `fetchImpl`. Ignored for streaming endpoints, and a no-op where `XMLHttpRequest`
+   * is unavailable (e.g. server-side) — the call still completes via `fetch`. Browser-oriented.
+   */
+  readonly onUploadProgress?: (progress: UploadProgress) => void;
 }
 /**
  * The per-call options object. Adds a `transport` choice (narrowed to `'http'`

@@ -121,11 +121,28 @@ Per-call `opts` (`CallOpts`):
 interface CallOptsBase {
   readonly signal?: AbortSignal            // cancels the in-flight request (and, over ws, the call)
   readonly headers?: Record<string,string> // extra headers; also delivers typed headers/cookies
+  readonly onUploadProgress?: (p: { loaded: number; total: number }) => void  // request-upload progress
 }
 // plus, per endpoint:
 //   transport?: 'http' | 'ws'  (narrowed to 'http' for httpOnly endpoints)
 //   stream:     required for streamIn endpoints (StreamBody for raw, AsyncIterable for typed items)
 ```
+
+**Upload progress.** Pass `onUploadProgress` to watch bytes sent for a file/multipart or body
+upload — the natural fit for a progress bar:
+
+```ts
+await sdk.call('upload', { doc: file, title }, {
+  onUploadProgress: ({ loaded, total }) => setPct(Math.round((loaded / total) * 100)),
+})
+```
+
+`fetch` exposes no upload-progress events, so when this is set the request goes via
+`XMLHttpRequest` instead (the only transport that reports them). Consequences: it **bypasses a
+custom `fetchImpl`**, applies only to **non-streaming** requests/responses (ignored for
+`streamIn`/`streamOut` endpoints), and is a **browser** feature — where `XMLHttpRequest` is absent
+(e.g. server-side) the call still completes via `fetch`, just without progress. The response and
+errors are identical to the `fetch` path (`ApiError`, `AbortError` on `signal`).
 
 ### `url(name, data?)` — GET-only
 

@@ -20,8 +20,57 @@ import type { Get, Json } from './types';
 import { ApiError } from './errors';
 import type { Manifest, ManifestEndpoint } from './manifest';
 import type { EndpointConfig, AnySpec, EventConfig, EventsOf } from './endpoint';
-import type { ClientData, CallArgs, CallReturn, CallOptsBase } from './payload';
+import type { ClientData, CallArgs, CallReturn, CallOptsBase, UploadProgress } from './payload';
 import { splitPattern, buildParts } from './path';
+
+/** Response statuses that must carry a null body (the `Response` constructor rejects a body for these). */
+const NULL_BODY_STATUS = new Set([101, 204, 205, 304]);
+
+/**
+ * Send a **non-streaming** request via `XMLHttpRequest` so the caller can observe upload progress —
+ * `fetch` has no upload-progress events. Resolves a normal {@link Response} (built from the buffered
+ * reply) so the rest of the client treats it identically, and rejects with fetch-compatible errors
+ * (`TypeError` for network failures, an `AbortError` `DOMException` for aborts).
+ */
+function xhrSend(
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body: XMLHttpRequestBodyInit | null,
+  signal: AbortSignal | undefined,
+  onProgress: (p: UploadProgress) => void,
+): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    xhr.responseType = 'arraybuffer';
+    for (const [k, v] of Object.entries(headers)) {xhr.setRequestHeader(k, v);}
+    xhr.upload.onprogress = (e: ProgressEvent) => {
+      if (e.lengthComputable) {onProgress({ loaded: e.loaded, total: e.total });}
+    };
+    const onAbort = (): void => xhr.abort();
+    const cleanup = (): void => signal?.removeEventListener('abort', onAbort);
+    xhr.onload = () => {
+      cleanup();
+      const resBody = NULL_BODY_STATUS.has(xhr.status) ? null : (xhr.response as ArrayBuffer);
+      resolve(new Response(resBody, { status: xhr.status, statusText: xhr.statusText }));
+    };
+    xhr.onerror = () => {
+      cleanup();
+      reject(new TypeError('Network request failed'));
+    };
+    xhr.onabort = () => {
+      cleanup();
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    xhr.send(body);
+  });
+}
 
 /** Duck-type a zod schema without referencing `z` as a value (keeps the bundle zod-free). */
 function isSchema(v: unknown): v is z.ZodType {
@@ -434,7 +483,13 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
     }
     const init: RequestInit & { duplex?: 'half' } = { method: m.method, headers, body, signal: callOpts?.signal };
     if (duplex) {init.duplex = 'half';}
-    const res = await doFetch(new Request(url, init));
+    // upload progress needs XHR (fetch reports none); only for non-streaming up/down, and only where XHR exists.
+    // this path bypasses a custom `fetchImpl`; without XHR it silently falls back to fetch (no progress).
+    const onProgress = callOpts?.onUploadProgress;
+    const res =
+      onProgress && !m.streamIn && !m.streamOut && typeof XMLHttpRequest !== 'undefined'
+        ? await xhrSend(m.method, url.toString(), headers, body as XMLHttpRequestBodyInit | null, callOpts?.signal, onProgress)
+        : await doFetch(new Request(url, init));
     if (!res.ok) {
       const errBody = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } } | Json;
       const env = (errBody as { error?: { code?: string; message?: string } })?.error;

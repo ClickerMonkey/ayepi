@@ -85,6 +85,7 @@ export type {
   IsHttpOnly,
   CallOptsBase,
   CallOpts,
+  UploadProgress,
   CallReturn,
   CallArgs,
   EmitArgs,
