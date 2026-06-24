@@ -43,6 +43,7 @@ interface ClientOptions {
   readonly ws?: ClientWs                                       // ws transport — required for ws calls + events
   readonly prefer?: 'http' | 'ws'                              // preferred transport for dual endpoints (default 'http')
   readonly validate?: AnySpec                                  // opt-in: parse responses/items with their schemas
+  readonly cache?: ClientCacheOptions                          // defaults for sdk.caller(...) caches (max/ttl/store) — see Callers
 }
 ```
 
@@ -430,4 +431,11 @@ const sdk = client<typeof api>({
 `client`, `wsTransport`, and the types `ApiClient`, `ClientOptions`, `ClientWs`,
 `GetUrlKeys`, `WsTransport`, `WsTransportOptions`, `WsState`, `BackoffOptions`,
 `HeartbeatOptions`, `WebSocketLike`, `WebSocketCtor`, `WsMessageEvent`. Plus `ApiError` /
-`reject` from errors, and the payload types in `ayepi-core-types.md`.
+`reject` from errors, and the payload types in `ayepi-core-types.md` (incl. `UploadProgress`,
+the `onUploadProgress` shape).
+
+**Callers** (this doc's [Callers](#callers--client-side-call-policy) section): `createClientCache`,
+`createCallerContext`, `stableStringify`, `CallerRateLimited`, and the types `Caller`,
+`CallerOptions`, `CallerCacheConfig`, `CallerDebounceConfig`, `CallerRateLimitConfig`,
+`CallerRetryConfig`, `Tagger`, `ClientCache`, `ClientCacheOptions`, `CallerContext`,
+`CacheStoreSpec`, `CacheHit`, `KVStore`.

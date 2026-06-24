@@ -434,6 +434,8 @@ Types:
 
 - `Middleware`, `Stack`, `StackCtx`, `StackLP`, `MiddlewareFactory`, `MiddlewareDoc`,
   `MiddlewareIO`, `MiddlewareResult`, `AnyMiddleware`.
+- `MiddlewareDef<P, R>` — the type a plain (non-loader) def has; give a def **factory** this as an
+  explicit return type so its inferred type stays portable across packages (avoids TS2742). (new)
 - `Provide<P>` — the return type of `ctx<P>()`; what `provides` expects (new).
 - `MiddlewareImplFor<M>`, `LoaderImplFor<M>`, `ImplFor<M>` — the exact impl type for a def `M`
   (`ImplFor` resolves to whichever of the two applies), for declaring impls out-of-line (new).

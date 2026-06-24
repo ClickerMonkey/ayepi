@@ -116,6 +116,9 @@ type CallOpts<E> = CallOptsBase
 - `stream` is **required** (not optional) on streaming-input endpoints: `StreamBody`
   (`ReadableStream<Uint8Array> | Blob | ArrayBuffer | string`) for raw, or a typed
   `AsyncIterable` for item streams.
+- `CallOptsBase` also carries `signal?` (abort), `headers?` (per-call), and
+  `onUploadProgress?: (p: UploadProgress) => void` — request-upload progress for file/body
+  uploads (routes the request via `XMLHttpRequest`; browser-only, see `ayepi-core-client.md`).
 
 `IsHttpOnly<E>` is `true` when `httpOnly: true`, or files, or a raw `streamIn`/`streamOut`
 are present — typed item streams stay ws-eligible.
@@ -244,7 +247,7 @@ example disagree, the example wins.)
 `Simplify<T>` (flatten an intersection into one object literal), `MaybePromise<T>`
 (`T | Promise<T>`), and `Json` (the closed JSON-shaped value the doc generators produce and
 accept in patch callbacks). The payload types above are all exported:
-`ClientData`, `CallArgs`, `CallOpts`, `CallOptsBase`, `CallReturn`, `HandlerPayload`,
+`ClientData`, `CallArgs`, `CallOpts`, `CallOptsBase`, `UploadProgress`, `CallReturn`, `HandlerPayload`,
 `HandlerReturn`, `HandlerFor`, `FailFn`, `StreamBody`, `IsHttpOnly`, `EmitArgs`, `EmitFn`,
 plus `CheckCfg`, `Endpoint`, `AnyEndpoint`, `EndpointConfig`, `AnySpec`, `SpecShape`,
 `EventConfig`, `EventsOf`, and the `Manifest` types.
