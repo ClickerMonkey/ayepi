@@ -22,7 +22,7 @@ This package ships dense, machine-oriented reference docs written for **AI codin
 
 - [`ayepi-bun.md`](./ayepi-bun.md)
 
-They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/bun) and are **not** shipped in the npm tarball.
+They ship with this package and also live in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/bun).
 
 ## License
 

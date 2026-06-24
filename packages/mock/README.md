@@ -45,5 +45,5 @@ This package ships dense, machine-oriented reference docs written for **AI codin
 
 - [`ayepi-mock.md`](./ayepi-mock.md)
 
-They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/mock) and are **not** shipped in the npm tarball.
+They ship with this package and also live in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/mock).
 

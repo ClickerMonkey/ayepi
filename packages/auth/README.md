@@ -142,7 +142,7 @@ This package ships dense, machine-oriented reference docs written for **AI codin
 
 - [`ayepi-auth.md`](./ayepi-auth.md)
 
-They live next to the source in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/auth) and are **not** shipped in the npm tarball.
+They ship with this package and also live in the [repo](https://github.com/ClickerMonkey/ayepi/tree/main/packages/auth).
 
 ## License
 

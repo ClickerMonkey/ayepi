@@ -17,7 +17,7 @@
   },
   "type": "module",
   "sideEffects": false,
-  "files": ["dist"],
+  "files": ["dist", "ayepi-*.md"],
   "exports": {
     ".": {
       "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
