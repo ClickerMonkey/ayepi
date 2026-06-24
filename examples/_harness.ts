@@ -155,7 +155,7 @@ export function runExample(opts: ExampleOptions): void {
     },
   };
 
-  serve(wrapped as Parameters<typeof serve>[0], {
+  serve(wrapped, {
     port,
     path: wsPath,
     onListen: ({ port }) => {

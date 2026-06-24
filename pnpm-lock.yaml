@@ -32,6 +32,12 @@ importers:
       '@ayepi/auth':
         specifier: workspace:*
         version: link:../packages/auth
+      '@ayepi/aws':
+        specifier: workspace:*
+        version: link:../packages/aws
+      '@ayepi/bun':
+        specifier: workspace:*
+        version: link:../packages/bun
       '@ayepi/cache':
         specifier: workspace:*
         version: link:../packages/cache
@@ -41,6 +47,9 @@ importers:
       '@ayepi/core':
         specifier: workspace:*
         version: link:../packages/core
+      '@ayepi/deno':
+        specifier: workspace:*
+        version: link:../packages/deno
       '@ayepi/files':
         specifier: workspace:*
         version: link:../packages/files
@@ -50,6 +59,9 @@ importers:
       '@ayepi/mcp':
         specifier: workspace:*
         version: link:../packages/mcp
+      '@ayepi/mock':
+        specifier: workspace:*
+        version: link:../packages/mock
       '@ayepi/node':
         specifier: workspace:*
         version: link:../packages/node
@@ -62,6 +74,9 @@ importers:
       '@ayepi/rate':
         specifier: workspace:*
         version: link:../packages/rate
+      '@ayepi/redis':
+        specifier: workspace:*
+        version: link:../packages/redis
       '@ayepi/updown':
         specifier: workspace:*
         version: link:../packages/updown
@@ -84,6 +99,9 @@ importers:
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
+      vite:
+        specifier: ^5.4.21
+        version: 5.4.21(@types/node@22.19.21)
 
   packages/auth:
     devDependencies:

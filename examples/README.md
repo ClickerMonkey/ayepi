@@ -15,6 +15,7 @@ world up to one that uses (nearly) everything:
 | 08 | [plugins](08-plugins) | `pnpm plugins` | http://localhost:3008 | a **plugin host** (**`@ayepi/plugin`**) — install/uninstall plugins (auth → notes → stats) into a running server, with hot remove/re-add |
 | 09 | [cache](09-cache) | `pnpm cache` | http://localhost:3009 | response **caching** (**`@ayepi/cache`**) — a per-user report cached by `ttl` + `vary`, with stale-while-revalidate and manual `bust` |
 | 10 | [files](10-files) | `pnpm files` | http://localhost:3010 | a presigned-URL **file store** (**`@ayepi/files`**) — `mountFiles` signs `GET`/`PUT` routes; uploads/downloads stream straight to/from disk |
+| 11 | [fullstack](11-fullstack) | `pnpm fullstack` | http://localhost:3011 | `app`/`shared`/`api` layout using **every** package, built by **Vite** for two targets (browser app + Node api); swappable **redis**/**aws** backends via in-memory stand-in clients |
 
 Node only (no Deno/Bun). The client is a single-file **Vue** app; the server is **Node**
 via `@ayepi/node`; the shared file holds the **zod schemas + spec**. Apps 04–07 also wire in
