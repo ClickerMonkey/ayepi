@@ -82,29 +82,58 @@ describe('WorkDelayError / runAt scheduling', () => {
     }
   });
 
-  it('puts an early-arrived item back until its startAt (backend that could not honor a long delay)', async () => {
+  it('re-pushes an early-arrived item FRESH (acks, not fail) until its startAt — redrive-safe', async () => {
     const future = Date.now() + 60_000;
     let ran = false;
-    const fails: number[] = [];
+    let acked = false;
+    let failed = false;
+    const pushes: number[] = [];
     let popped = false;
     const q: Queue = {
-      push: () => {},
+      push: (_body: string, o?: { delay?: number }) => void pushes.push(o?.delay ?? 0),
       pop: () => {
         if (popped) {return [];}
         popped = true;
         return [{ body: envBody({ startAt: future }), handle: 'h', attempt: 1 }];
       },
       heartbeat: () => {},
-      ack: () => {},
-      fail: (_p: PulledWork, delay?: number) => void fails.push(delay ?? 0),
+      ack: () => void (acked = true),
+      fail: () => void (failed = true),
     };
     const noop = defineWork('noop', () => void (ran = true));
     const w = createWork({ work: [noop] as const, queue: q, store: memoryStore(), pubsub: memoryPubSub(), ...fast });
     try {
       await wait(30);
       expect(ran).toBe(false); // not due → never started
-      expect(fails.length).toBeGreaterThanOrEqual(1);
-      expect(fails[0]).toBeGreaterThan(50_000); // put back with ~the remaining delay
+      expect(acked).toBe(true); // the old delivery was acked...
+      expect(pushes.at(-1)).toBeGreaterThan(50_000); // ...and a fresh message pushed with ~the remaining delay
+      expect(failed).toBe(false); // NOT ChangeMessageVisibility (which would accumulate the receive count)
+    } finally {
+      await w.stop();
+    }
+  });
+
+  it('a not-due item that bounces every poll never dead-letters (attempt never advances)', async () => {
+    const future = Date.now() + 60_000;
+    let pushes = 0;
+    let acks = 0;
+    const dead: string[] = [];
+    const q: Queue = {
+      // always hand back the same scheduled-but-not-due item (simulates a delay-capped backend)
+      push: () => void pushes++,
+      pop: () => [{ body: envBody({ startAt: future, attempt: 1, retry: { attempts: 1 } }), handle: 'h', attempt: 99 }],
+      heartbeat: () => {},
+      ack: () => void acks++,
+      fail: () => {},
+      deadLetter: (body: string) => void dead.push(body),
+    };
+    const noop = defineWork('noop2', () => {});
+    const w = createWork({ work: [noop] as const, queue: q, store: memoryStore(), pubsub: memoryPubSub(), pollInterval: 5, visibility: 5000, heartbeat: 2000 });
+    try {
+      await wait(60);
+      expect(dead).toEqual([]); // bounced many times (attempts:1) yet NEVER dead-lettered
+      expect(pushes).toBeGreaterThan(2); // it was repeatedly re-pushed fresh
+      expect(acks).toBe(pushes); // each bounce acked the old + pushed a new (1:1)
     } finally {
       await w.stop();
     }

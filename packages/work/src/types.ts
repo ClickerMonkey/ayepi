@@ -16,6 +16,7 @@
 import { uuid, type Clock, type LogWith } from './internal';
 import type { JsonCodec } from './json';
 import type { Backend, Queue } from './ports';
+import type { Metrics, StatValue } from '@ayepi/core/stats';
 import type { Doer } from '@ayepi/core/doer';
 import type { RetryOptions } from '@ayepi/core/retry';
 import type { MaybePromise } from '@ayepi/core';
@@ -95,6 +96,34 @@ export interface BatchConfig<I, O> {
   readonly run: (inputs: I[]) => O[] | Promise<O[]>;
 }
 
+/**
+ * What a handler failure should do — the return of an {@link WorkOptions.onFailure} /
+ * {@link WorkSystemOptions.onFailure} classifier. Lets you treat, say, an API rate-limit (429) as
+ * "come back later" instead of a retry that burns the attempt budget and eventually dead-letters.
+ */
+export type FailureDecision =
+  /** Re-enqueue with backoff, advancing `attempt` (dead-letters once exhausted) — the default if no classifier matches. */
+  | 'retry'
+  /** Dead-letter the item now; no further attempts (a permanent failure). */
+  | 'abort'
+  /** Re-enqueue after `delay` ms **without** advancing `attempt` — a reschedule, e.g. honor a rate-limit's `Retry-After`. */
+  | { readonly delay: number }
+  /** Re-enqueue to run at an absolute time (epoch ms) **without** advancing `attempt`. */
+  | { readonly runAt: number };
+
+/** Context passed to an {@link WorkOptions.onFailure} classifier. */
+export interface WorkFailureInfo {
+  readonly id: string;
+  readonly type: string;
+  /** The delivery attempt that just failed (1-based). */
+  readonly attempt: number;
+  /** Total attempts allowed for this item. */
+  readonly attempts: number;
+}
+
+/** Classify a handler error into a {@link FailureDecision}; `void` (the default) means retry/dead-letter by attempt count. */
+export type FailureClassifier = (err: unknown, info: WorkFailureInfo) => MaybePromise<FailureDecision | void>;
+
 /** Per-work-type options passed to {@link defineWork}. */
 export interface WorkOptions<I> {
   /** Default retry policy for this type (overridden per-instance by {@link WorkInstanceOptions.retry}). */
@@ -118,6 +147,13 @@ export interface WorkOptions<I> {
   readonly codec?: JsonCodec;
   /** Per-type lifecycle hook (fired alongside the global {@link WorkSystemOptions.onEvent}). */
   readonly onEvent?: (event: WorkEvent) => void;
+  /**
+   * Classify a handler failure for this type into a {@link FailureDecision} — `'abort'` (dead-letter
+   * now), a `{ delay }`/`{ runAt }` reschedule (re-queue without counting a retry, e.g. a rate limit),
+   * or `'retry'`/nothing for the default. Overrides {@link WorkSystemOptions.onFailure}. (A handler can
+   * also decide directly by throwing `RetryAbort` → dead-letter, or `WorkDelayError` → reschedule.)
+   */
+  readonly onFailure?: FailureClassifier;
   /** Derive `logWith` context from this type's input (merged over the global hook). */
   readonly logContext?: (input: I) => object;
   /**
@@ -293,6 +329,19 @@ export interface WorkAcceptInfo {
   readonly input: unknown;
 }
 
+/**
+ * What a {@link WorkSystemOptions.backpressure} hook receives each poll: a live per-type
+ * {@link WorkStats} snapshot and the total in-flight count. Lets the hook adapt the pause to
+ * observed throughput/latency (see the bundled `adaptiveDelay` helper). The hook may still take
+ * no arguments — the context is optional.
+ */
+export interface BackpressureContext {
+  /** The live metrics registry — read per-type counters/gauges/summaries (same as {@link WorkSystem.metrics}). */
+  readonly metrics: Metrics;
+  /** Total items this instance is currently holding (polled + accepted, across all types). */
+  readonly active: number;
+}
+
 /** Passed to {@link WorkSystemOptions.unhandledWorkGroup} when a group finishes with no waiter. */
 export interface UnhandledWorkGroupInfo {
   readonly groupId: string;
@@ -356,8 +405,12 @@ export interface WorkSystemOptions {
    * capacity, a downstream API rate-limited, a memory ceiling). May be async. A throwing
    * `backpressure` is reported via {@link onError} (`'queue'`) and the loop backs off `pollInterval`.
    * Prefer a modest interval (it also bounds how long `stop()` waits for the loop to exit).
+   *
+   * The hook receives a {@link BackpressureContext} (a live {@link WorkStats} snapshot + the
+   * in-flight count) so the pause can adapt to observed throughput/latency — pass the bundled
+   * `adaptiveDelay()` helper, or read `ctx.stats` yourself. (Taking no arguments is still valid.)
    */
-  readonly backpressure?: () => MaybePromise<number | void>;
+  readonly backpressure?: (ctx: BackpressureContext) => MaybePromise<number | void>;
   /** Lease/visibility timeout for a pulled item (ms, default 30000). */
   readonly visibility?: number;
   /** Heartbeat interval extending the lease (ms, default `visibility / 3`). */
@@ -382,12 +435,37 @@ export interface WorkSystemOptions {
    */
   readonly onError?: (err: unknown, phase: 'commit' | 'queue') => void;
   /**
+   * Default classifier for handler failures (a per-type {@link WorkOptions.onFailure} overrides it):
+   * map an error to `'abort'` (dead-letter now), a `{ delay }`/`{ runAt }` reschedule (re-queue
+   * without burning a retry — e.g. a rate limit), or `'retry'`/nothing for the normal attempt-counted
+   * behavior. A throwing classifier is reported and falls back to the default.
+   */
+  readonly onFailure?: FailureClassifier;
+  /**
+   * A readable dead-letter {@link Queue} to **redrive** from. When the normal queue(s) are idle
+   * (a poll round pulled nothing) and there is free capacity, the loop transfers up to
+   * {@link redriveCount} bodies from here back onto their type's queue as **fresh** work
+   * (`attempt` reset to 1, full retry budget) and acks them off the DLQ. Use it to automatically
+   * reprocess dead-lettered items once a downstream recovers. Point it at the same sink your
+   * queue's `deadLetter` writes to (an unparseable body is dropped). Off by default.
+   */
+  readonly dlq?: Queue;
+  /** Max messages to redrive from {@link dlq} per idle poll (default 10; `0` disables redrive). */
+  readonly redriveCount?: number;
+  /**
    * Instance affinity. Return `false` to decline an item on this instance (it is
    * deferred for another to pick up) — lets you shard work types across a fleet.
    */
   readonly accept?: (info: WorkAcceptInfo) => boolean;
   /** Called once when a group finishes with a result but nobody was waiting for it. */
   readonly unhandledWorkGroup?: (info: UnhandledWorkGroupInfo) => void;
+  /**
+   * The {@link Metrics} registry the engine records per-type stats into (default: a fresh
+   * `createMetrics()`). Provide one to enable summary **quantiles** (`createMetrics({ quantiles:
+   * [0.5, 0.95, 0.99] })`), share a registry across several systems, or subscribe to changes.
+   * Exposed back as {@link WorkSystem.metrics}.
+   */
+  readonly metrics?: Metrics;
   /** Start the worker loop immediately (default true). */
   readonly autoStart?: boolean;
   /** Clock injection for tests (default `Date.now`). */
@@ -412,6 +490,18 @@ export interface WorkSystem<Defs extends readonly AnyWorkBuilder[]> {
   list(): Promise<WorkState[]>;
   /** Work currently held by this instance — polled and accepted (will not be skipped). */
   active(): ActiveWork[];
+  /**
+   * A flat snapshot of every per-type metric series (counters/gauges/summaries), labelled by work
+   * `type` — a convenience for `metrics.list()`. Pass to `formatPrometheus`, or read individual
+   * series via {@link metrics}. See `@ayepi/core`'s {@link StatValue}.
+   */
+  stats(): StatValue[];
+  /**
+   * The live {@link Metrics} registry the engine records into — `list()` / `get(name, { type })` /
+   * `subscribe()` for change notifications. Bring your own via {@link WorkSystemOptions.metrics}
+   * (e.g. to enable quantiles or share one registry across systems).
+   */
+  readonly metrics: Metrics;
   /** The underlying ports (queue/pubsub/store) — useful in tests and for sharing a backend. */
   readonly backend: Backend;
 }

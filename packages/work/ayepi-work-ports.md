@@ -70,6 +70,15 @@ single delay is capped (e.g. SQS) need only honor `delay` up to its own ceiling 
 re-checks `startAt` on the next pop and re-defers until the item is actually due (see
 [Early-arrival re-defer](#early-arrival-re-defer-far-future-scheduling)).
 
+> **State the engine guarantees won't leak.** Each leased/dispatched item's transient state is
+> paired: an acquire returns its own teardown, and the runner always runs it in a `finally`, so the
+> active-set entry + heartbeat are torn down on every path (success, throw, deferral, dead-letter) —
+> and even if a misbehaving doer throws on handoff. The group "open-work" counter (`+1` at submit,
+> `-1` at settle) is likewise **rolled back** if an enqueue fails before the item reaches the queue,
+> so a failed `push` (e.g. a backend that exhausts its retries) can't leave a group stuck open and
+> hang an awaiting handle. A custom backend only needs to honor the port contracts above; these
+> invariants are the engine's own.
+
 ### `PubSub` — best-effort cross-instance fanout
 
 Identical in shape to `@ayepi/core`'s `Broker`: publish an opaque string, subscribe to

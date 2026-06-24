@@ -120,6 +120,7 @@ interface WorkOptions<I> {
   readonly options?: (input: I) => WorkInstanceOptions   // compute per-instance options from input
   readonly codec?: JsonCodec                             // per-type codec (else the global codec)
   readonly onEvent?: (event: WorkEvent) => void          // per-type lifecycle hook
+  readonly onFailure?: FailureClassifier                 // classify a failure → abort / re-queue / retry (see "Classifying a failure")
   readonly logContext?: (input: I) => object             // derive logWith context from input
   readonly skipQueue?: boolean                           // run the first attempt in-process
 }
@@ -195,7 +196,7 @@ bundled in-memory backend and an `unlimitedDoer`.
 | `retry` | `RetryOptions` | `@ayepi/core` defaults (`attempts:3, base:1000, factor:2, max:30000, jitter:0.5`) |
 | `doer` | `Doer` | `unlimitedDoer()` |
 | `pollInterval` | `number` (ms) | `1000` |
-| `backpressure` | `() => MaybePromise<number \| void>` | — (always proceed) |
+| `backpressure` | `(ctx: BackpressureContext) => MaybePromise<number \| void>` | — (always proceed) |
 | `visibility` | `number` (ms) | `30000` |
 | `heartbeat` | `number` (ms) | `Math.floor(visibility / 3)` |
 | `prefix` | `string` | `'work:'` |
@@ -204,6 +205,10 @@ bundled in-memory backend and an `unlimitedDoer`.
 | `logContext` | `(input, type) => object` | — |
 | `onEvent` | `(event: WorkEvent) => void` | — |
 | `onError` | `(err, phase: 'commit' \| 'queue') => void` | — |
+| `onFailure` | `FailureClassifier` (default; per-type overrides) | — (retry) |
+| `dlq` | `Queue` (readable — redrive source when idle) | — (off) |
+| `redriveCount` | `number` (max moved per idle poll) | `10` |
+| `metrics` | `Metrics` (`@ayepi/core` registry; bring one for quantiles) | fresh `createMetrics()` |
 | `accept` | `(info: WorkAcceptInfo) => boolean` | — (accept all) |
 | `unhandledWorkGroup` | `(info: UnhandledWorkGroupInfo) => void` | — |
 | `autoStart` | `boolean` | `true` |
@@ -227,6 +232,8 @@ interface WorkSystem<Defs extends readonly AnyWorkBuilder[]> {
   stop(): Promise<void>                          // stop loops, flush in-flight (idempotent)
   list(): Promise<WorkState[]>                   // snapshot of known states (best-effort)
   active(): ActiveWork[]                         // work this instance polled + accepted
+  stats(): StatValue[]                           // flat per-type metric snapshot (see below)
+  readonly metrics: Metrics                      // the live metrics registry (list/get/subscribe)
   readonly backend: Backend                      // the underlying ports
 }
 ```
@@ -439,6 +446,43 @@ backs off `pollInterval`. Prefer a modest pause (it's re-polled, and it also bou
 `stop()` waits for the loop to exit). `backpressure` gates the durable queue loop only;
 `skipQueue` work runs in-process regardless.
 
+The hook receives a `BackpressureContext` — the live `metrics` registry plus the in-flight
+`active` count — so the pause can adapt to observed throughput (taking no arguments is still
+valid, as above).
+
+#### `adaptiveDelay()` — automatic throughput-driven backoff
+
+For the common case of "slow down automatically when a downstream starts failing," drop in
+the bundled `adaptiveDelay()` helper. It's an AIMD controller (the shape TCP uses): each poll
+it samples the **delta** in `succeeded`/`failed` since the last check, and when the recent
+failure rate exceeds `maxFailRate` it backs off multiplicatively; when work completes cleanly
+it ramps the pause back down additively — self-healing, with no windowed state to keep.
+
+```ts
+import { adaptiveDelay } from '@ayepi/work'
+
+createWork({
+  work: [...] as const,
+  backpressure: adaptiveDelay({ max: 10_000 }), // pause grows toward 10s under failures, eases back to 0
+})
+```
+
+```ts
+adaptiveDelay({
+  types?:       string[]   // only watch these types (default: all)
+  maxFailRate?: number     // failed/(succeeded+failed) per interval before backing off (default 0 — any failure)
+  min?:         number     // pause floor while healthy (default 0)
+  max?:         number     // pause ceiling (default 30000)
+  base?:        number     // first non-zero pause when backoff starts (default 100)
+  factor?:      number     // multiplier per unhealthy interval (default 2)
+  step?:        number     // amount subtracted per healthy interval (default = base)
+})
+```
+
+It's **stateful** (the current pause + last counts live in the closure), so create **one**
+per work system. Pass `types` to protect a specific downstream — e.g. watch only the type that
+hits a rate-limited API. Or read `ctx.metrics` directly in your own hook for a custom policy.
+
 ## Deferral & scheduling
 
 ### `runAt` — absolute scheduling
@@ -488,14 +532,64 @@ runAt; at }`). A **batch** handler throwing `WorkDelayError` defers **every** it
 batch. As with `runAt`, a far-future deferral is honored even on delay-capping backends via
 the engine's early-arrival re-defer.
 
-### `RetryAbort` is re-exported (not a work-handler special case)
+### Classifying a failure — abort vs. retry vs. re-queue
 
-`@ayepi/core`'s `RetryAbort` is re-exported here for convenience. It stops a `retry()` call
-immediately (skip the remaining attempts, re-throw its `cause`). It is **not** special-cased
-by the work engine: a work handler that throws `RetryAbort` is treated as an ordinary handler
-failure — it retries/dead-letters by the normal `attempt` count. To stop early from a handler,
-either return, or throw `WorkDelayError` to defer. Use `RetryAbort` inside a handler only to
-abort a nested `retry()` you call yourself.
+When a handler throws, the engine routes the failure three ways — so a permanent error stops
+fast and a transient one (a rate limit) comes back **without** burning the retry budget:
+
+- **`throw new RetryAbort(cause)`** → **dead-letter now** (permanent). No more attempts, no churn;
+  the item goes `dead` with `cause`'s message and the awaiting `.result()` rejects. (`RetryAbort`
+  is `@ayepi/core`'s, re-exported here.)
+- **`throw new WorkDelayError({ delay })`** → **re-queue, `attempt` unchanged** (transient). The
+  natural fit for a rate limit (`429` + `Retry-After`) or "upstream not ready."
+- **anything else** → the normal **retry** (backoff, `attempt++`, dead-letter once exhausted).
+
+For policy you don't want to encode at each throw site, classify centrally with
+**`onFailure`** (per-type on `WorkOptions`, or a default on `WorkSystemOptions`):
+
+```ts
+type FailureDecision = 'retry' | 'abort' | { delay: number } | { runAt: number }
+
+defineWork('call-api', handler, {
+  retry: { attempts: 5 },
+  onFailure: (err, { attempt }) => {
+    const s = (err as { status?: number }).status
+    if (s === 429) return { delay: 30_000 } // rate-limited → come back in 30s, NOT a retry
+    if (s && s >= 400 && s < 500) return 'abort' // client error → permanent, dead-letter now
+    return 'retry' // (or return nothing) → normal backoff retry
+  },
+})
+```
+
+`(err, info) => 'retry' | 'abort' | { delay } | { runAt } | void` — `info` is `{ id, type,
+attempt, attempts }`. `'abort'` dead-letters; `{ delay }`/`{ runAt }` reschedule without counting a
+retry (emitting a `deferred` event, like `WorkDelayError`); `'retry'`/`void` is the default. A
+per-type `onFailure` overrides the system one; a throwing classifier is reported and falls back to
+the default. (An explicit `RetryAbort`/`WorkDelayError` throw takes precedence over the classifier.)
+
+### Redriving the dead-letter queue — `dlq`
+
+Dead-lettered items are terminal — but a downstream that was down often recovers. Point
+`WorkSystemOptions.dlq` at a **readable** `Queue` and, whenever the normal queue(s) are idle (a
+poll round pulled nothing) and there's free capacity, the loop transfers up to `redriveCount`
+bodies from it back onto their type's queue as **fresh** work — `attempt` reset to 1 (full retry
+budget), `queueAt`/`startAt` = now, a fresh group hold re-opened — then acks them off the DLQ:
+
+```ts
+createWork({
+  work: [...] as const,
+  dlq: deadLetterQueue,   // a Queue you can pop() — e.g. the sink your queue's deadLetter writes to
+  redriveCount: 10,       // max moved per idle poll (default 10; 0 disables)
+})
+```
+
+Redrive only runs when the live queues are empty, so it never competes with fresh work. Each
+moved item re-enters as a normal `queued` item (counted in `stats()`), and an unparseable body is
+dropped (acked) rather than looped on. Wire `dlq` to the same sink your queue's `deadLetter`
+targets so recovery is automatic; leave it unset to keep dead items terminal until you redrive
+them yourself.
+
+### `retry()`'s own `on` hook
 
 What a `retry()` does on each error is configurable per call:
 `RetryOptions.on?: (err) => MaybePromise<number | false>` returns `false` to **stop**, or a number
@@ -562,6 +656,53 @@ interface WorkState {
 `active()` returns the work this instance has **polled and accepted** (will not be
 skipped), as `ActiveWork` (`status` is `'pending'` = admitted to the doer awaiting a slot,
 or `'running'`).
+
+### `metrics` / `stats()` — per-type metrics
+
+The engine records per-type metrics into a `Metrics` registry from `@ayepi/core` (re-exported
+here). Each series is **labelled by work `type`** and fed at every lifecycle transition, so it
+tracks the gaps between an item's timestamps: creation (`queueAt`) → start (`runAt`) → terminal
+(`endAt`). All durations are **ms**; counters are cumulative since start.
+
+- `w.metrics` — the live registry: `list()`, `get(name, { type })`, `subscribe(listener)`.
+- `w.stats()` — convenience for `w.metrics.list()`: a flat `StatValue[]` (one per name + labels).
+
+Metric names live on the exported `WORK_METRICS` map (so you reference series without typos):
+
+```
+counters   work.queued  work.started  work.succeeded  work.failed
+           work.retried  work.deferred  work.rescheduled
+gauges     work.active  work.pending  work.running  work.peak_active
+           work.last_queued_at  work.last_started_at  work.last_succeeded_at  work.last_failed_at
+summaries  work.wait_time      poll lag      runAt − startAt
+(ms unless work.total_time     end-to-end    endAt − queueAt
+ noted)    work.success_time / work.error_time   run duration (success / dead-letter)
+           work.delay_time / work.reschedule_time   re-queue horizons
+           work.attempts (count)   tries used at terminal
+```
+
+A **summary** always carries `{ count, total, min, max, avg }`; pass a quantile-enabled registry
+to also get `quantiles` (p50/p95/p99) and histogram `buckets`:
+
+```ts
+import { createWork, createMetrics, formatPrometheus, WORK_METRICS } from '@ayepi/work'
+
+const metrics = createMetrics({ quantiles: [0.5, 0.95, 0.99] }) // opt-in percentiles
+const w = createWork({ work: [...] as const, metrics })
+
+const s = w.metrics.get(WORK_METRICS.successTime, { type: 'sendEmail' })?.summary
+s?.avg; s?.quantiles?.['0.95']                                   // mean / tail latency
+
+// integrate: scrape/log on an interval, or push on change
+setInterval(() => console.log(formatPrometheus(w.stats())), 15_000)
+w.metrics.subscribe((changed) => pushToStatsd(changed))         // coalesced (one batch per burst)
+```
+
+Notes: `active = pending + running`; `peak_active` is the high-water mark. `wait_time` is the
+**poll lag** (`runAt − startAt` for *this* delivery), not the end-to-end wait — use `total_time`
+for cradle-to-grave. A type's series appear once it's first queued or claimed. `subscribe`
+batches a burst of mutations into one callback (via microtask); for pull-based exporters just
+call `stats()`/`metrics.list()`. See `@ayepi/core`'s stats module for the registry API.
 
 ## Default instance + top-level exports
 

@@ -55,6 +55,10 @@ export type {
   WorkStatus,
   WorkEvent,
   WorkAcceptInfo,
+  BackpressureContext,
+  FailureDecision,
+  FailureClassifier,
+  WorkFailureInfo,
   ActiveWork,
   UnhandledWorkGroupInfo,
   DependencyCondition,
@@ -70,6 +74,15 @@ export type {
   OutputForName,
   GroupResult,
 } from './types';
+
+/* ---- per-type stats (metric names + re-exported core metrics primitive) ---- */
+export { WORK_METRICS } from './stats';
+export { createMetrics, formatPrometheus, DEFAULT_BUCKETS } from '@ayepi/core/stats';
+export type { Metrics, MetricsOptions, Counter, Gauge, Summary, StatKind, StatMeta, StatValue, StatSummary, StatBucket, Labels } from '@ayepi/core/stats';
+
+/* ---- adaptive backpressure ---- */
+export { adaptiveDelay } from './adaptive';
+export type { AdaptiveDelay, AdaptiveDelayOptions } from './adaptive';
 
 /* ---- ports ---- */
 export type { Queue, PubSub, Store, Backend, PulledWork, PushOptions } from './ports';
