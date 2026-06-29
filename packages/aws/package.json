@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/aws",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AWS backends for ayepi — an SQS @ayepi/work queue (large payloads offloaded to S3) and an S3 @ayepi/files store, all retry-wrapped for throttle resilience",
   "license": "MIT",
   "publishConfig": {

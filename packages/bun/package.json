@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/bun",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Bun adapter for @ayepi/core — fetch-native HTTP + native WebSocket, zero dependencies",
   "license": "MIT",
   "publishConfig": {

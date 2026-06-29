@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/mock",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mock server for @ayepi/core — generate schema-valid fake data from a spec, with deterministic seeding and automatic pagination",
   "license": "MIT",
   "publishConfig": {

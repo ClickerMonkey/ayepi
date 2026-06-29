@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Model Context Protocol server for @ayepi/core — expose any ayepi spec as schema-validated MCP tools, executed against your app",
   "license": "MIT",
   "publishConfig": {

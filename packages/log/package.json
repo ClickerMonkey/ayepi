@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/log",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Structured logging for ayepi — AsyncLocalStorage trace context, console interception, console/file transports, error serialization, middleware",
   "license": "MIT",
   "publishConfig": {
