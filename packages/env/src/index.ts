@@ -32,7 +32,7 @@
  */
 
 export { env } from './env';
-export type { Env, EnvInput, EnvOutput, EnvFieldDef, EnvSet, EnvOnOptions } from './env';
+export type { Env, EnvInput, EnvOutput, EnvFieldDef, EnvSet, EnvOnOptions, EnvOptions } from './env';
 
 export { asyncEnv } from './async';
 export type { AsyncEnv, AsyncEnvInput, AsyncEnvOutput, AsyncEnvFieldDef } from './async';
@@ -46,5 +46,6 @@ export type { EnvMeta } from './meta';
 export { EnvError, defaultSource, mergeSources, resolveRaw } from './source';
 export type { EnvSource } from './source';
 
-export { coerce, effectiveType } from './coerce';
+export { coerce, effectiveType, DEFAULT_TRUE, DEFAULT_FALSE } from './coerce';
+export type { BooleanWords } from './coerce';
 export { parseDotenv } from './dotenv';

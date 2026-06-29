@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { coerce, effectiveType } from '../src/coerce';
+import { coerce, effectiveType, DEFAULT_TRUE, DEFAULT_FALSE } from '../src/coerce';
 
 describe('effectiveType', () => {
   it('reads the leaf type, looking through wrappers', () => {
@@ -34,6 +34,15 @@ describe('coerce', () => {
     for (const t of ['true', '1', 'yes', 'y', 'on', 'TRUE']) {expect(coerce(z.boolean(), t)).toBe(true);}
     for (const f of ['false', '0', 'no', 'n', 'off']) {expect(coerce(z.boolean(), f)).toBe(false);}
     expect(coerce(z.boolean(), 'maybe')).toBe('maybe'); // unrecognized stays
+  });
+
+  it('accepts custom boolean words (replacing a side; the other keeps its default)', () => {
+    expect(DEFAULT_TRUE.has('yes')).toBe(true);
+    expect(DEFAULT_FALSE.has('no')).toBe(true);
+    const words = { true: new Set(['si']) }; // false omitted → default FALSE set
+    expect(coerce(z.boolean(), 'si', words)).toBe(true);
+    expect(coerce(z.boolean(), 'yes', words)).toBe('yes'); // default true set no longer applies
+    expect(coerce(z.boolean(), 'no', words)).toBe(false); // default false set still applies
   });
 
   it('coerces dates (and leaves invalid ones)', () => {

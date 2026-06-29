@@ -17,6 +17,47 @@ describe('env — fields, coercion, validation', () => {
     expect(ENV.parse()).toEqual({ PORT: 8080, DEBUG: true, TAGS: ['a', 'b'], NAME: 'svc' });
   });
 
+  it('auto-coerces plain schemas — no z.coerce required', () => {
+    const ENV = env({
+      PORT: z.number(),
+      RATIO: z.number(),
+      BIG: z.bigint(),
+      DEBUG: z.boolean(),
+      WHEN: z.date(),
+      TAGS: z.array(z.string()),
+      META: z.object({ x: z.number() }),
+    });
+    ENV.set({ PORT: '8080', RATIO: '-3.5', BIG: '10', DEBUG: 'yes', WHEN: '2020-01-02T03:04:05.000Z', TAGS: '["a","b"]', META: '{"x":1}' });
+    expect(ENV.parse()).toEqual({
+      PORT: 8080,
+      RATIO: -3.5,
+      BIG: 10n,
+      DEBUG: true,
+      WHEN: new Date('2020-01-02T03:04:05.000Z'),
+      TAGS: ['a', 'b'],
+      META: { x: 1 },
+    });
+  });
+
+  it('configures the strings that count as boolean true/false', () => {
+    const ENV = env(
+      { ENABLED: z.boolean(), LEGACY: z.boolean() },
+      { booleans: { true: ['enabled', 'ON!'], false: ['disabled'] } },
+    );
+    ENV.set({ ENABLED: 'ENABLED', LEGACY: 'on' }); // 'on' is no longer truthy (true set replaced)
+    expect(ENV.get('ENABLED')).toBe(true);
+    expect(() => ENV.get('LEGACY')).toThrow(EnvError); // 'on' not recognized → stays string → zod rejects
+    ENV.set({ LEGACY: 'disabled' });
+    expect(ENV.get('LEGACY')).toBe(false);
+
+    // overriding only one side keeps the default set for the other
+    const ONE = env({ F: z.boolean() }, { booleans: { true: ['si'] } });
+    ONE.set({ F: 'si' });
+    expect(ONE.get('F')).toBe(true);
+    ONE.set({ F: 'no' }); // 'no' is still a default false
+    expect(ONE.get('F')).toBe(false);
+  });
+
   it('applies defaults for absent keys', () => {
     const ENV = env({ PORT: z.coerce.number().default(3000), NAME: z.string().default('x') });
     expect(ENV.parse()).toEqual({ PORT: 3000, NAME: 'x' });

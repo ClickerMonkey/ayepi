@@ -17,7 +17,7 @@ import { env } from '@ayepi/env'
 import { z } from 'zod'
 
 const ENV = env({
-  PORT: z.coerce.number().default(3000),
+  PORT: z.number().default(3000),            // plain z.number() — no z.coerce needed
   DATABASE_URL: z.string().url(),
   DEBUG: z.boolean().default(false),         // DEBUG=1 / true / yes / on
   FLAGS: z.array(z.string()).default([]),    // FLAGS='["a","b"]'  (complex → JSON)
@@ -28,6 +28,8 @@ ENV.parse()       // resolve everything; throws an aggregated EnvError listing e
 ```
 
 By default fields read from `process.env`. Anything you `set(...)` layers on top (and wins).
+Schemas are **auto-coerced** from their string form, so plain `z.number()` / `z.boolean()` /
+`z.date()` / `z.object()` work straight from env vars — `z.coerce.*` is never required.
 
 ## Fields
 
@@ -78,6 +80,13 @@ Coercion never throws — when a conversion is ambiguous it leaves the raw strin
 the final, authoritative error. Wrappers (`.optional()`, `.default()`, `.nullable()`, …) are seen
 through to the underlying type.
 
+The strings that count as booleans are configurable (case-insensitive); each side you pass
+**replaces** its default set, an omitted side keeps the default:
+
+```ts
+env({ FEATURE: z.boolean() }, { booleans: { true: ['enabled', 'on'], false: ['disabled', 'off'] } })
+```
+
 ## Aliasing
 
 Read a field from one of several source keys (first present wins) via metadata on its schema:
@@ -87,7 +96,7 @@ import { alias } from '@ayepi/env'
 
 env({
   DATABASE_URL: alias(z.string().url(), 'DATABASE_URL', 'DB_URL', 'POSTGRES_URL'),
-  PORT: z.coerce.number().meta({ vars: ['PORT', 'APP_PORT'] }),  // same thing, by hand
+  PORT: z.number().meta({ vars: ['PORT', 'APP_PORT'] }),  // same thing, by hand
 })
 ```
 
@@ -123,6 +132,14 @@ ENV.set({ ...loadEnv({ files: ['.env'] }), ...process.env }) // …or let proces
 `loadEnv({ files, required? })` reads `.env`/`.json` files into a plain source record (later files
 win) that you feed to `set(...)`. A `.json` file may carry already-typed values (numbers, nested
 objects). `readEnvFile(path)` and `parseDotenv(text)` are exported for direct use.
+
+Missing files are **ignored** by default. Control that with `required`:
+
+```ts
+loadEnv({ files: ['.env', '.env.local'] })                          // ignore any missing file
+loadEnv({ files: ['.env', '.env.local'], required: true })          // throw if ANY is missing
+loadEnv({ files: ['.env', '.env.local'], required: ['.env'] })      // throw only if .env is missing
+```
 
 ## Async + dynamic — `asyncEnv`
 

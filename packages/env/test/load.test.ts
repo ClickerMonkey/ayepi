@@ -42,9 +42,18 @@ describe('loadEnv', () => {
     expect(ENV.parse()).toEqual({ PORT: 2, NAME: 'from-dotenv', META: { x: 7 } });
   });
 
-  it('skips a missing file by default, but throws when required', () => {
+  it('ignores missing files by default, fails when required: true', () => {
     expect(loadEnv({ files: [join(dir, 'nope.env')] })).toEqual({});
     expect(() => loadEnv({ files: [join(dir, 'nope.env')], required: true })).toThrow(/not found/);
+  });
+
+  it('required: string[] fails only for the listed files, ignoring other missing ones', () => {
+    const missingReq = join(dir, 'must.env');
+    const missingOpt = join(dir, 'maybe.env');
+    // present file + an ignored-missing file → ok, even though `required` lists a different missing file…
+    expect(loadEnv({ files: [envFile, missingOpt], required: [missingReq] })).toEqual({ PORT: '1', NAME: 'from-dotenv' });
+    // …but when a *required* file is missing, it throws
+    expect(() => loadEnv({ files: [envFile, missingReq], required: [missingReq] })).toThrow(/must\.env/);
   });
 
   it('returns an empty source with no files', () => {

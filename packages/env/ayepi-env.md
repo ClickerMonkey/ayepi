@@ -37,7 +37,7 @@ pnpm add @ayepi/env zod
 ## `env(input)` → `Env<T>`
 
 ```ts
-function env(input: EnvInput): Env<T>
+function env(input: EnvInput, options?: EnvOptions): Env<T>
 
 type EnvInput<Inherited> = Record<string, z.ZodType | ((inherited: Inherited) => z.ZodType | any)>
 
@@ -69,7 +69,7 @@ import { z } from 'zod'
 
 const ENV = env({
   NODE_ENV: z.enum(['development', 'production']).default('development'),
-  PORT: z.coerce.number().default(3000),
+  PORT: z.number().default(3000),   // plain z.number() — auto-coerced, no z.coerce
 })
   .add({ IS_PROD: (e) => e.NODE_ENV === 'production' })   // computed value (boolean)
   .add({ LOG: (e) => (e.IS_PROD ? z.enum(['warn', 'error']) : z.string().default('debug')) })
@@ -117,7 +117,7 @@ import { alias } from '@ayepi/env'
 
 env({
   DATABASE_URL: alias(z.string().url(), 'DATABASE_URL', 'DB_URL', 'POSTGRES_URL'),
-  PORT: z.coerce.number().meta({ vars: ['PORT', 'APP_PORT'] }),
+  PORT: z.number().meta({ vars: ['PORT', 'APP_PORT'] }),
 })
 ```
 
@@ -159,6 +159,17 @@ A **non-string** input (e.g. a number from a JSON file) is returned untouched. C
 throws** — when in doubt it returns the raw string and lets **zod** produce the authoritative error.
 `effectiveType(schema)` is exported too.
 
+Because coercion runs **before** zod, you write plain schemas — **`z.coerce.*` is not required** (and
+harmless if used). The boolean spellings are configurable per env via `EnvOptions.booleans`; each
+side you provide **replaces** its default set (case-insensitive), an omitted side keeps the default:
+
+```ts
+env({ FEATURE: z.boolean() }, { booleans: { true: ['enabled', 'on'], false: ['disabled', 'off'] } })
+```
+
+`DEFAULT_TRUE` / `DEFAULT_FALSE` (the default sets) and `coerce(schema, value, words?)` (which takes
+a `BooleanWords` override directly) are exported.
+
 ## `EnvError`
 
 Thrown by `get`/`parse` (and rejected by their async counterparts). `error.issues` is the underlying
@@ -181,15 +192,16 @@ trailing on **unquoted** values), blank lines, single-quoted (literal) and doubl
 import { loadEnv, readEnvFile } from '@ayepi/env/load'
 
 function readEnvFile(path: string): EnvSource          // .env → record, .json → parsed object
-function loadEnv(opts?: { files?: string[]; required?: boolean }): EnvSource
+function loadEnv(opts?: { files?: string[]; required?: boolean | readonly string[] }): EnvSource
 
 type EnvSource = Record<string, unknown>
 ```
 
 `loadEnv` reads the listed `.env`/`.json` files into a single merged source (later files win) — a
 plain record you feed to `set(...)`. A `.json` file may carry already-typed values (they pass through
-coercion). Missing files are skipped unless `required: true` (then it throws). **Precedence is up to
-you** at the `set(...)` call:
+coercion). Missing files are **ignored** by default; `required` controls failure: `true` throws if
+**any** listed file is missing; a `string[]` throws only if one of **those** files is missing (other
+missing files are still skipped). **Precedence is up to you** at the `set(...)` call:
 
 ```ts
 const ENV = env(schema)
@@ -204,7 +216,7 @@ ENV.set({ ...loadEnv({ files: ['.env'] }), ...process.env }) // process.env wins
 The async sibling of `env`. Everything `env` does, plus async resolution and **dynamic** fields.
 
 ```ts
-function asyncEnv(input: AsyncEnvInput): AsyncEnv<T>
+function asyncEnv(input: AsyncEnvInput, options?: EnvOptions): AsyncEnv<T>   // same EnvOptions as env()
 
 type AsyncEnvInput<Inherited> = Record<string,
   | z.ZodType

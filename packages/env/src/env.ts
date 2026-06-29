@@ -25,7 +25,7 @@
  * @module
  */
 import type { z } from 'zod';
-import { coerce } from './coerce';
+import { coerce, type BooleanWords } from './coerce';
 import { varsOf } from './meta';
 import { EnvError, customIssue, defaultSource, errMessage, keyed, resolveRaw, type EnvSource } from './source';
 import { changed, isZodType } from './util';
@@ -53,6 +53,27 @@ export type EnvSet<T extends object> = {
 } & {
   [key: string]: unknown;
 };
+
+/** Build-time options for {@link env} / {@link asyncEnv}. */
+export interface EnvOptions {
+  /**
+   * Customize which strings coerce to booleans (case-insensitive). Each side you provide
+   * **replaces** its default set; an omitted side keeps the default. E.g.
+   * `{ booleans: { true: ['enabled'], false: ['disabled'] } }`.
+   */
+  readonly booleans?: {
+    readonly true?: readonly string[];
+    readonly false?: readonly string[];
+  };
+}
+
+/** Normalize {@link EnvOptions} into the lowercased {@link BooleanWords} the coercer consumes. */
+export function toWords(options?: EnvOptions): BooleanWords | undefined {
+  const b = options?.booleans;
+  if (!b) {return undefined;}
+  const lower = (xs?: readonly string[]): ReadonlySet<string> | undefined => (xs ? new Set(xs.map((s) => s.trim().toLowerCase())) : undefined);
+  return { true: lower(b.true), false: lower(b.false) };
+}
 
 /** Options for {@link Env.on}. */
 export interface EnvOnOptions {
@@ -115,9 +136,11 @@ class EnvImpl {
   private readonly keyLs = new Map<string, Set<KeyListener>>();
   private readonly globalLs = new Set<GlobalListener>();
   private readonly prev = new Map<string, unknown>();
+  private readonly words?: BooleanWords;
   private groupCount = 0;
 
-  constructor(input: Record<string, EnvFieldDef<unknown>>) {
+  constructor(input: Record<string, EnvFieldDef<unknown>>, options?: EnvOptions) {
+    this.words = toWords(options);
     this.define(input);
   }
 
@@ -181,7 +204,7 @@ class EnvImpl {
       result = computed;
     } else {
       const raw = resolveRaw(this.source(), varsOf(schema!, key));
-      const res = schema!.safeParse(raw !== undefined ? coerce(schema!, raw) : undefined);
+      const res = schema!.safeParse(raw !== undefined ? coerce(schema!, raw, this.words) : undefined);
       if (!res.success) {throw new EnvError(keyed(key, res.error.issues));}
       result = res.data;
     }
@@ -348,6 +371,6 @@ class EnvImpl {
 }
 
 /** Build a typed, lazy, reactive config from a record of fields. Reads `process.env` by default. */
-export function env<const T extends EnvInput<{}>>(input: T): Env<EnvOutput<{}, T>> {
-  return new EnvImpl(input as Record<string, EnvFieldDef<unknown>>) as unknown as Env<EnvOutput<{}, T>>;
+export function env<const T extends EnvInput<{}>>(input: T, options?: EnvOptions): Env<EnvOutput<{}, T>> {
+  return new EnvImpl(input as Record<string, EnvFieldDef<unknown>>, options) as unknown as Env<EnvOutput<{}, T>>;
 }

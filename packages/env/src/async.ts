@@ -15,8 +15,8 @@
  * @module
  */
 import type { z } from 'zod';
-import { coerce } from './coerce';
-import type { EnvOnOptions, EnvSet } from './env';
+import { coerce, type BooleanWords } from './coerce';
+import { toWords, type EnvOnOptions, type EnvOptions, type EnvSet } from './env';
 import { varsOf } from './meta';
 import { isDynamic, type DynamicBinding, type EnvProvider, type MaybePromise } from './provider';
 import { EnvError, customIssue, defaultSource, errMessage, keyed, resolveRaw, type EnvSource } from './source';
@@ -99,9 +99,11 @@ class AsyncEnvImpl {
   private readonly dynamicRaw = new Map<string, string | undefined>();
   private readonly started = new Set<string>();
   private readonly watchers = new Map<string, () => void>();
+  private readonly words?: BooleanWords;
   private groupCount = 0;
 
-  constructor(input: Record<string, AsyncEnvFieldDef<unknown>>) {
+  constructor(input: Record<string, AsyncEnvFieldDef<unknown>>, options?: EnvOptions) {
+    this.words = toWords(options);
     this.define(input);
   }
 
@@ -120,7 +122,7 @@ class AsyncEnvImpl {
 
   /** Validate a raw string against `schema` (coercing first); throws a keyed {@link EnvError} on failure. */
   private validate(schema: z.ZodType, key: string, raw: string | undefined): unknown {
-    const res = schema.safeParse(raw !== undefined ? coerce(schema, raw) : undefined);
+    const res = schema.safeParse(raw !== undefined ? coerce(schema, raw, this.words) : undefined);
     if (!res.success) {throw new EnvError(keyed(key, res.error.issues));}
     return res.data;
   }
@@ -135,7 +137,7 @@ class AsyncEnvImpl {
 
   /** A live push from a provider: keep the last good value on a bad update, else apply + notify. */
   private onDynamic(def: FieldDef & { kind: 'dynamic' }, raw: string | undefined): void {
-    const res = def.schema.safeParse(raw !== undefined ? coerce(def.schema, raw) : undefined);
+    const res = def.schema.safeParse(raw !== undefined ? coerce(def.schema, raw, this.words) : undefined);
     if (!res.success) {return;} // invalid update — keep last good
     this.dynamicRaw.set(def.key, raw);
     void this.emitChange();
@@ -246,7 +248,7 @@ class AsyncEnvImpl {
       const def = this.defs.get(k) as FieldDef & { kind: 'dynamic' };
       await this.ensureStarted(def);
       const raw = await def.provider.load();
-      const res = def.schema.safeParse(raw !== undefined ? coerce(def.schema, raw) : undefined);
+      const res = def.schema.safeParse(raw !== undefined ? coerce(def.schema, raw, this.words) : undefined);
       if (res.success) {
         this.dynamicRaw.set(k, raw);
         any = true;
@@ -381,6 +383,6 @@ class AsyncEnvImpl {
 }
 
 /** Build a typed, lazy, reactive **async** config — supports async factories and live providers. */
-export function asyncEnv<const T extends AsyncEnvInput<{}>>(input: T): AsyncEnv<AsyncEnvOutput<{}, T>> {
-  return new AsyncEnvImpl(input as Record<string, AsyncEnvFieldDef<unknown>>) as unknown as AsyncEnv<AsyncEnvOutput<{}, T>>;
+export function asyncEnv<const T extends AsyncEnvInput<{}>>(input: T, options?: EnvOptions): AsyncEnv<AsyncEnvOutput<{}, T>> {
+  return new AsyncEnvImpl(input as Record<string, AsyncEnvFieldDef<unknown>>, options) as unknown as AsyncEnv<AsyncEnvOutput<{}, T>>;
 }

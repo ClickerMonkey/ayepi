@@ -30,16 +30,23 @@ export function readEnvFile(path: string): EnvSource {
 export interface LoadOptions {
   /** Files to read (in order, earlier is lower precedence); `.env` or `.json`. */
   readonly files?: readonly string[];
-  /** Throw if a listed file is missing (default `false` — missing files are skipped). */
-  readonly required?: boolean;
+  /**
+   * Which missing files should **throw** instead of being skipped:
+   * - `false` / omitted — ignore every missing file (default),
+   * - `true` — throw if **any** listed file is missing,
+   * - `string[]` — throw only if one of **these specific** files is missing (others are ignored).
+   */
+  readonly required?: boolean | readonly string[];
 }
 
 /** Read the listed files into a single merged source (later files win). Pass the result to `set(...)`. */
 export function loadEnv(opts: LoadOptions = {}): EnvSource {
   const out: EnvSource = {};
+  const req = opts.required;
+  const mustExist = (file: string): boolean => req === true || (Array.isArray(req) && req.includes(file));
   for (const file of opts.files ?? []) {
     if (existsSync(file)) {Object.assign(out, readEnvFile(file));}
-    else if (opts.required) {throw new Error(`env file not found: ${file}`);}
+    else if (mustExist(file)) {throw new Error(`env file not found: ${file}`);}
   }
   return out;
 }

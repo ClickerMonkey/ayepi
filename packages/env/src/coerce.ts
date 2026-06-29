@@ -36,14 +36,23 @@ export function effectiveType(schema: z.ZodType): string {
   return d.type;
 }
 
-const TRUE = new Set(['true', '1', 'yes', 'y', 'on']);
-const FALSE = new Set(['false', '0', 'no', 'n', 'off']);
+/** The default strings parsed as `true` / `false` (matched case-insensitively, trimmed). */
+export const DEFAULT_TRUE: ReadonlySet<string> = new Set(['true', '1', 'yes', 'y', 'on']);
+export const DEFAULT_FALSE: ReadonlySet<string> = new Set(['false', '0', 'no', 'n', 'off']);
+
+/** Override the strings recognized as booleans. Each side omitted falls back to its default set. */
+export interface BooleanWords {
+  /** Strings that mean `true` (replaces {@link DEFAULT_TRUE} when given). */
+  readonly true?: ReadonlySet<string>;
+  /** Strings that mean `false` (replaces {@link DEFAULT_FALSE} when given). */
+  readonly false?: ReadonlySet<string>;
+}
 
 /** Parse a boolean-ish string; `undefined` when it isn't recognizably boolean. */
-function toBool(value: string): boolean | undefined {
+function toBool(value: string, words?: BooleanWords): boolean | undefined {
   const v = value.trim().toLowerCase();
-  if (TRUE.has(v)) {return true;}
-  if (FALSE.has(v)) {return false;}
+  if ((words?.true ?? DEFAULT_TRUE).has(v)) {return true;}
+  if ((words?.false ?? DEFAULT_FALSE).has(v)) {return false;}
   return undefined;
 }
 
@@ -61,10 +70,12 @@ const JSONISH = new Set(['object', 'array', 'tuple', 'record', 'map', 'set', 'un
 
 /**
  * Coerce `value` toward what `schema` expects. Non-string values pass through; strings are
- * converted per the field's effective type. Returns the original string when a conversion is
- * ambiguous or fails, so zod produces the final, authoritative error.
+ * converted per the field's effective type — so a plain `z.number()` / `z.boolean()` / `z.date()`
+ * / `z.object()` works straight from env strings, **no `z.coerce` needed**. Returns the original
+ * string when a conversion is ambiguous or fails, so zod produces the final, authoritative error.
+ * Pass `words` to customize which strings count as boolean `true`/`false`.
  */
-export function coerce(schema: z.ZodType, value: unknown): unknown {
+export function coerce(schema: z.ZodType, value: unknown, words?: BooleanWords): unknown {
   if (typeof value !== 'string') {return value;} // already structured (e.g. from a JSON source)
   const t = effectiveType(schema);
   switch (t) {
@@ -80,7 +91,7 @@ export function coerce(schema: z.ZodType, value: unknown): unknown {
       }
     }
     case 'boolean': {
-      const b = toBool(value);
+      const b = toBool(value, words);
       return b === undefined ? value : b;
     }
     case 'date': {
