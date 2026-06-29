@@ -39,6 +39,7 @@
     "@ayepi/codec": "workspace:*",
     "@ayepi/plugin": "workspace:*",
     "@ayepi/cache": "workspace:*",
+    "@ayepi/env": "workspace:*",
     "@ayepi/aws": "workspace:*",
     "@ayepi/redis": "workspace:*",
     "@ayepi/bun": "workspace:*",

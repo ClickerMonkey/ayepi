@@ -14,6 +14,8 @@
  *
  * This module is imported by the Node **api** only — never the browser app.
  */
+import { z } from 'zod';
+import { env } from '@ayepi/env';
 import type { Queue, Store, PubSub } from '@ayepi/work';
 import type { CacheStore } from '@ayepi/cache';
 import { redisStore, redisPubSub, redisCache, type RedisCommandClient, type RedisLike } from '@ayepi/redis';
@@ -196,6 +198,13 @@ export function memorySqsClient(): SqsClient {
 /** Which work backend to wire, from `BACKEND` (default `memory`). */
 export type BackendKind = 'memory' | 'redis' | 'sqs';
 
+/**
+ * Typed config for this module, via `@ayepi/env` — reads `process.env` by default, coerces +
+ * validates `BACKEND` against the allowed set, and falls back to `memory`. Invalid values throw
+ * a readable `EnvError` on first read instead of silently selecting the wrong backend.
+ */
+const ENV = env({ BACKEND: z.enum(['memory', 'redis', 'sqs']).default('memory') });
+
 /** The selected ports: a (partial) work backend plus the always-on `redisCache` store. */
 export interface SelectedBackends {
   readonly kind: BackendKind;
@@ -207,7 +216,7 @@ export interface SelectedBackends {
 }
 
 /** Build the backends for `kind`. Shares one stand-in Redis between the work store and cache. */
-export function selectBackends(kind: BackendKind = (process.env.BACKEND as BackendKind) || 'memory'): SelectedBackends {
+export function selectBackends(kind: BackendKind = ENV.get('BACKEND')): SelectedBackends {
   const redisCmd = memoryRedisCommands();
   const cacheStore = redisCache(redisCmd, { prefix: 'cache:' });
 

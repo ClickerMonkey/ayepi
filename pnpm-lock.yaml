@@ -50,6 +50,9 @@ importers:
       '@ayepi/deno':
         specifier: workspace:*
         version: link:../packages/deno
+      '@ayepi/env':
+        specifier: workspace:*
+        version: link:../packages/env
       '@ayepi/files':
         specifier: workspace:*
         version: link:../packages/files
@@ -253,6 +256,24 @@ importers:
       '@ayepi/core':
         specifier: workspace:*
         version: link:../core
+      '@vitest/coverage-v8':
+        specifier: ^2.1.8
+        version: 2.1.9(vitest@2.1.9(@types/node@22.19.21))
+      publint:
+        specifier: ^0.3.0
+        version: 0.3.21
+      tsdown:
+        specifier: ^0.12.0
+        version: 0.12.9(publint@0.3.21)(typescript@5.9.3)
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.21)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
+  packages/env:
+    devDependencies:
       '@vitest/coverage-v8':
         specifier: ^2.1.8
         version: 2.1.9(vitest@2.1.9(@types/node@22.19.21))
