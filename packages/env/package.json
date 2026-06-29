@@ -1,0 +1,52 @@
+{
+  "name": "@ayepi/env",
+  "version": "0.1.0",
+  "description": "Typed, lazy, reactive environment/config on zod — env({...}) reads process.env, records, .env/JSON files; coerces scalars and JSON-decodes complex types; computed fields, aliasing, and async/dynamic (live, subscribable) values",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/env"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/env#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist", "ayepi-*.md"],
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    },
+    "./load": {
+      "import": { "types": "./dist/load.d.ts", "default": "./dist/load.js" },
+      "require": { "types": "./dist/load.d.cts", "default": "./dist/load.cjs" }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "publint": "publint"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.8",
+    "publint": "^0.3.0",
+    "tsdown": "^0.12.0",
+    "vitest": "^2.1.8",
+    "zod": "^4.4.3"
+  },
+  "keywords": ["ayepi", "env", "environment", "config", "dotenv", "zod", "configuration", "12-factor"]
+}
