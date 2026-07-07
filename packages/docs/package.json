@@ -1,0 +1,35 @@
+{
+  "name": "@ayepi/docs",
+  "version": "0.2.0",
+  "description": "Sync the flat ayepi agent-reference docs (ayepi.md + every installed @ayepi/* package's ayepi-*.md) into your repo's docs folder.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/docs"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/docs#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
+  "type": "module",
+  "bin": {
+    "ayepi-docs": "bin/ayepi-docs.mjs"
+  },
+  "files": ["bin", "ayepi.md"],
+  "scripts": {
+    "build": "node scripts/bundle-index.mjs",
+    "prepack": "node scripts/bundle-index.mjs",
+    "publint": "publint"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "publint": "^0.3.0"
+  },
+  "keywords": ["ayepi", "docs", "llm", "agent", "reference", "cli"]
+}

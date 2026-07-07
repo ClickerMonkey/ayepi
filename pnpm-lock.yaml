@@ -272,6 +272,12 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  packages/docs:
+    devDependencies:
+      publint:
+        specifier: ^0.3.0
+        version: 0.3.21
+
   packages/env:
     devDependencies:
       '@vitest/coverage-v8':

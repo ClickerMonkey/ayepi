@@ -2,11 +2,15 @@
 ayepi.md — START HERE. The index / router for the ayepi agent-reference docs.
 
 This file explains what ayepi is, the mental model every other doc assumes, and — for whatever
-you're trying to do — which per-package `ayepi-<pkg>.md` reference to open. Copy it (with the
-`ayepi-*.md` files for the packages you use) into your repo's `docs/` or `.claude/` directory and
-point your agents/slash commands at it. The `ayepi-*.md` files are written to sit **flat**
-alongside this one, so the `./ayepi-core.md`-style links below resolve. Keep them in sync with the
-installed package versions.
+you're trying to do — which per-package `ayepi-<pkg>.md` reference to open. The `ayepi-*.md` files
+are written to sit **flat** alongside this one, so the `./ayepi-core.md`-style links below resolve.
+
+To get that flat layout in your repo, run `npx @ayepi/docs` from your project root: it copies this
+index plus every installed `@ayepi/*` package's `ayepi-*.md` into `./docs` (pass another dir, e.g.
+`npx @ayepi/docs .claude`; add `--prune` to de-link packages you didn't install). Then point your
+agents/slash commands at it, and re-run after upgrading to keep the docs in sync. (In THIS repo the
+per-package files live nested under `packages/<pkg>/`, so the links below only resolve once
+flattened.)
 -->
 
 # ayepi — agent guide
