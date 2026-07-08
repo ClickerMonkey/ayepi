@@ -11,7 +11,8 @@
  * import { rateLimit } from '@ayepi/rate/server';
  * implement(api).middleware(rateLimit.server(limit, {
  *   key: (io) => io.ctx.user.id,
- *   limit: 100,
+ *   // static, or derived per request — e.g. a higher limit for premium users
+ *   limit: (io) => (io.ctx.user.plan === 'pro' ? 1000 : 100),
  *   window: 60_000,
  * }));
  * ```
@@ -20,28 +21,61 @@
  */
 
 import type { AnyMiddleware, BoundMiddleware, ImplFor, MiddlewareIO, StackCtx, Json } from '@ayepi/core';
-import { limiter, rateLimitResponse, rateLimitHeaders, rateLimit as rateLimitDef } from './index';
-import type { Algorithm, RateKeyIO, RateLimitInfo, RateLimitResult, RateLimitStore } from './index';
+import { memoryStore, rateLimitResponse, rateLimitHeaders, rateLimit as rateLimitDef, DEFAULT_ALGORITHM, DEFAULT_PREFIX } from './index';
+import type { Algorithm, RateKeyIO, RateLimitInfo, RateLimitResult, RateLimitRule, RateLimitStore } from './index';
 
 /** The `requires` chain of a middleware def. */
 type ReqOf<M extends AnyMiddleware> = M['__req'];
+
+/** The `io` (request + accumulated, typed context) passed to every per-request option of a bound {@link rateLimit}. */
+type KeyIO<M extends AnyMiddleware> = RateKeyIO<StackCtx<ReqOf<M>>>;
+
+/**
+ * A per-request option: derive `T` from the rate-limit key {@link RateKeyIO} — the same
+ * `(io) => T` shape `key` and `skip` use. `io.ctx` is typed from the def's `requires`.
+ */
+export type RateKeyFn<M extends AnyMiddleware, T> = (io: KeyIO<M>) => T;
+
+/**
+ * A {@link RateLimitServerOptions} field that is either a fixed `T` or resolved **per request**
+ * from the key {@link RateKeyIO}. Use a function to vary the policy by caller — e.g. a larger
+ * `limit` for a premium plan, a longer `window` for a trusted client.
+ */
+export type Dynamic<M extends AnyMiddleware, T> = T | RateKeyFn<M, T>;
+
+/** Resolve a {@link Dynamic} option for a request (calls it with `io` when it's a function). */
+function resolve<M extends AnyMiddleware, T>(value: T | RateKeyFn<M, T>, io: KeyIO<M>): T {
+  return typeof value === 'function' ? (value as RateKeyFn<M, T>)(io) : value;
+}
 
 /**
  * Server-side options for binding a {@link rateLimit} def — the limiting policy and
  * response customization, with `key`/`skip`/`message` typed against the def's
  * `requires` context.
  *
+ * The rule itself — `limit`, `window`, `algorithm`, `countRejected` — can be a fixed value or
+ * a `(io) => T` resolved per request, so limits can differ by caller (plan, tenant, API key).
+ * **Resolve these from a stable property of the identity** (the same key should always map to
+ * the same `window`/`algorithm`): the store buckets its per-key state by them, so varying
+ * `window`/`algorithm` for one key across requests gives inconsistent accounting. Varying only
+ * `limit` is always safe. See {@link Dynamic}.
+ *
  * @typeParam M - the rate-limit def being bound.
  */
 export interface RateLimitServerOptions<M extends AnyMiddleware> {
   /** Derive the rate-limit key from the request context (e.g. `io.ctx.user.id`). */
-  readonly key: (io: RateKeyIO<StackCtx<ReqOf<M>>>) => string;
-  /** Max requests (or token-bucket capacity) per window. */
-  readonly limit: number;
-  /** Window length in milliseconds (also the token refill period). */
-  readonly window: number;
-  /** Algorithm (default `'fixed-window'`). */
-  readonly algorithm?: Algorithm;
+  readonly key: RateKeyFn<M, string>;
+  /** Max requests (or token-bucket capacity) per window — fixed, or per request. */
+  readonly limit: Dynamic<M, number>;
+  /** Window length in milliseconds (also the token refill period) — fixed, or per request. */
+  readonly window: Dynamic<M, number>;
+  /** Algorithm (default `'fixed-window'`) — fixed, or per request. */
+  readonly algorithm?: Dynamic<M, Algorithm>;
+  /**
+   * Count requests that are themselves rejected (over-limit) against the limit — fixed, or per
+   * request. Default `false`; see {@link RateLimitRule.countRejected}.
+   */
+  readonly countRejected?: Dynamic<M, boolean>;
   /** Backend store (default an in-process memory store). */
   readonly store?: RateLimitStore;
   /** Key prefix/namespace (default `'rl:'`). */
@@ -49,7 +83,7 @@ export interface RateLimitServerOptions<M extends AnyMiddleware> {
   /** Over-limit status code (default `429`). */
   readonly status?: number;
   /** Over-limit body — a string, a JSON value, or a function of the limiter info and request. */
-  readonly message?: string | Json | ((info: RateLimitInfo, io: RateKeyIO<StackCtx<ReqOf<M>>>) => string | Json);
+  readonly message?: string | Json | ((info: RateLimitInfo, io: KeyIO<M>) => string | Json);
   /** Response headers (draft `RateLimit-*` + `Retry-After` by default; `false` for none; a function for your own). */
   readonly headers?: boolean | ((info: RateLimitInfo) => Record<string, string>);
   /**
@@ -60,7 +94,7 @@ export interface RateLimitServerOptions<M extends AnyMiddleware> {
    */
   readonly alwaysHeaders?: boolean;
   /** Bypass the limiter for some requests (e.g. an allow-list). */
-  readonly skip?: (io: RateKeyIO<StackCtx<ReqOf<M>>>) => boolean;
+  readonly skip?: RateKeyFn<M, boolean>;
   /**
    * What to do when the **store itself errors** (e.g. Redis is down) — `true` serves the
    * request through (as if allowed, full budget); `false` (default) is fail-**closed**: the
@@ -77,17 +111,27 @@ export interface RateLimitServerOptions<M extends AnyMiddleware> {
 
 /** Bind a {@link rateLimit} def to its runtime policy. */
 function rateLimitServer<M extends AnyMiddleware>(def: M, opts: RateLimitServerOptions<M>): BoundMiddleware<M> {
-  const lim = limiter(opts); // the standalone primitive does the actual limiting
+  const store = opts.store ?? memoryStore();
+  const prefix = opts.prefix ?? DEFAULT_PREFIX;
   const message = opts.message;
 
+  // The rule can vary per request; resolve every field from `io` (a plain value is returned as-is).
+  const ruleFor = (io: KeyIO<M>): RateLimitRule => ({
+    limit: resolve(opts.limit, io),
+    window: resolve(opts.window, io),
+    algorithm: (opts.algorithm !== undefined ? resolve(opts.algorithm, io) : undefined) ?? DEFAULT_ALGORITHM,
+    countRejected: (opts.countRejected !== undefined ? resolve(opts.countRejected, io) : undefined) ?? false,
+  });
+
   const run = async (io: MiddlewareIO<StackCtx<ReqOf<M>>>) => {
-    const kio: RateKeyIO<StackCtx<ReqOf<M>>> = { req: io.req, ctx: io.ctx };
+    const kio: KeyIO<M> = { req: io.req, ctx: io.ctx };
+    const rule = ruleFor(kio);
     // when `alwaysHeaders`, advertise the RateLimit-* headers on allowed/skipped responses too
     const advertise = (info: RateLimitInfo): void => {
       if (!opts.alwaysHeaders) {return;}
       for (const [name, value] of Object.entries(rateLimitHeaders(info, opts.headers))) {io.setHeader(name, value);}
     };
-    const fullBudget = (): RateLimitInfo => ({ limit: lim.rule.limit, remaining: lim.rule.limit, reset: 0, retryAfter: 0 });
+    const fullBudget = (): RateLimitInfo => ({ limit: rule.limit, remaining: rule.limit, reset: 0, retryAfter: 0 });
     if (opts.skip?.(kio)) {
       const skipped = fullBudget();
       advertise(skipped);
@@ -95,7 +139,7 @@ function rateLimitServer<M extends AnyMiddleware>(def: M, opts: RateLimitServerO
     }
     let result: RateLimitResult;
     try {
-      result = await lim.check(opts.key(kio));
+      result = await store.consume(prefix + opts.key(kio), rule, Date.now());
     } catch (err) {
       try {
         opts.onError?.(err);

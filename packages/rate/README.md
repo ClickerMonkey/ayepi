@@ -49,6 +49,9 @@ retryAfter }`); on exceeded requests the chain short-circuits with the 429.
 - `rateLimit.server(def, opts)` (`@ayepi/rate/server`) — binds the policy. These options
   move here: `key, limit, window, algorithm?, store?, prefix?, countRejected?, status?,
   message?, headers?, alwaysHeaders?, skip?`. Bind it with `implement(api).middleware(...)`.
+  The rule fields — `limit`, `window`, `algorithm`, `countRejected` — each accept a fixed
+  value **or** a per-request `(io) => value`, so limits can differ by caller (e.g.
+  `limit: (io) => io.ctx.user.plan === 'pro' ? 1000 : 100`).
 
 ## Standalone (without middleware)
 

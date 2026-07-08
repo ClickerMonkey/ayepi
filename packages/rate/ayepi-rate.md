@@ -115,7 +115,8 @@ Everything below is exported. `@internal` symbols are intentionally omitted.
 | Export | Kind | Purpose |
 | --- | --- | --- |
 | `rateLimit` | function | Same name, **augmented with `.server(def, opts)`** to bind the policy. |
-| `RateLimitServerOptions` | interface | The policy options for `.server` (extends `LimiterOptions`). |
+| `RateLimitServerOptions` | interface | The policy options for `.server` (rule fields accept a static value or a per-request `(io) => T`). |
+| `RateKeyFn` / `Dynamic` | type | Helpers: `RateKeyFn<M, T> = (io) => T`; `Dynamic<M, T> = T \| RateKeyFn<M, T>` — the shape of every per-request option. |
 
 ### Redis subpath `@ayepi/rate/redis`
 
@@ -158,10 +159,10 @@ it in another middleware's `requires` (see `ayepi-core-middleware.md`).
 ### The impl (`@ayepi/rate/server`)
 
 ```ts
-rateLimit.server: <const R extends readonly AnyMiddleware[]>(
-  def: RateLimitDef<{ ratelimit: RateLimitInfo }, R>,
-  opts: RateLimitServerOptions<StackCtx<R>, R>,
-) => BoundMiddleware  // pass to implement(api).middleware(...)
+rateLimit.server: <M extends AnyMiddleware>(
+  def: M,                              // a RateLimitDef — its `requires` types `io.ctx`
+  opts: RateLimitServerOptions<M>,
+) => BoundMiddleware<M>  // pass to implement(api).middleware(...)
 ```
 
 `.server` binds the policy and returns the bound pair. It composes with the chainable
@@ -170,20 +171,35 @@ rateLimit.server: <const R extends readonly AnyMiddleware[]>(
 ### `RateLimitServerOptions`
 
 ```ts
-interface RateLimitServerOptions<Ctx extends object, R extends readonly AnyMiddleware[]>
-  extends LimiterOptions {
+// A rule field is either a fixed value or resolved per request from the key `io`.
+type RateKeyFn<M, T> = (io: RateKeyIO<StackCtx<ReqOf<M>>>) => T;
+type Dynamic<M, T>   = T | RateKeyFn<M, T>;
+
+interface RateLimitServerOptions<M extends AnyMiddleware> {
   /** Derive the rate-limit key from the request context (e.g. `io.ctx.user.id`). */
-  readonly key: (io: RateKeyIO<Ctx>) => string;
+  readonly key: RateKeyFn<M, string>;
+  /** Max requests (or token-bucket capacity) per window — fixed, or per request. */
+  readonly limit: Dynamic<M, number>;
+  /** Window length in ms (also the token refill period) — fixed, or per request. */
+  readonly window: Dynamic<M, number>;
+  /** Algorithm (default `'fixed-window'`) — fixed, or per request. */
+  readonly algorithm?: Dynamic<M, Algorithm>;
+  /** Count rejected (over-limit) requests against the limit (default `false`) — fixed, or per request. */
+  readonly countRejected?: Dynamic<M, boolean>;
+  /** Backend store (default an in-process `memoryStore`). */
+  readonly store?: RateLimitStore;
+  /** Key prefix/namespace (default `'rl:'`). */
+  readonly prefix?: string;
   /** Over-limit status code (default `429`). */
   readonly status?: number;
   /** Over-limit body — string, JSON value, or a function of (info, io). */
-  readonly message?: string | Json | ((info: RateLimitInfo, io: RateKeyIO<Ctx>) => string | Json);
+  readonly message?: string | Json | ((info: RateLimitInfo, io: RateKeyIO<StackCtx<ReqOf<M>>>) => string | Json);
   /** Response headers (see `RateLimitResponseOptions`). */
   readonly headers?: boolean | ((info: RateLimitInfo) => Record<string, string>);
   /** Also emit the `RateLimit-*` headers on allowed/skipped responses (default `false`). */
   readonly alwaysHeaders?: boolean;
   /** Bypass the limiter for some requests (e.g. an allow-list). */
-  readonly skip?: (io: RateKeyIO<Ctx>) => boolean;
+  readonly skip?: RateKeyFn<M, boolean>;
   /** Serve through (as allowed) when the **store** errors, instead of failing the request. Default `false` (fail-closed). */
   readonly failOpen?: boolean;
   /** Observe a store error (e.g. Redis down). Fires regardless of `failOpen`. Off by default; must not throw. */
@@ -191,30 +207,24 @@ interface RateLimitServerOptions<Ctx extends object, R extends readonly AnyMiddl
 }
 ```
 
+> **Dynamic policy.** `limit`, `window`, `algorithm`, and `countRejected` each accept a plain
+> value **or** a `(io) => value` resolved per request — so different callers get different
+> limits (e.g. a higher `limit` for a premium plan, a longer `window` for a trusted key). `io`
+> is the same `{ req, ctx }` `key`/`skip` receive, with `io.ctx` typed from the def's `requires`.
+> Resolve `window`/`algorithm` from a **stable** property of the identity (a given key should
+> always map to the same window/algorithm) — the store buckets its per-key state by them, so
+> varying them for one key across requests gives inconsistent accounting. Varying only `limit`
+> is always safe.
+
 > **Store errors.** By default the limiter is **fail-closed**: if the store (e.g. a Redis
 > outage) throws, the error propagates and the request is rejected — a store outage doesn't
 > silently lift the limit. Set `failOpen: true` to serve such requests through instead, and/or
 > `onError` to observe the failure (it fires either way). `rateLimitedDoer` takes an `onError`
 > too: a store error there is reported and admission retried — it never strands pending tasks.
 
-…plus everything from `LimiterOptions`:
-
-```ts
-interface LimiterOptions {
-  /** Max requests (or token-bucket capacity) per window. */
-  readonly limit: number;
-  /** Window length in milliseconds (also the token refill period). */
-  readonly window: number;
-  /** Algorithm (default `'fixed-window'`). */
-  readonly algorithm?: Algorithm;
-  /** Backend store (default an in-process `memoryStore`). */
-  readonly store?: RateLimitStore;
-  /** Key prefix/namespace (default `'rl:'`). */
-  readonly prefix?: string;
-  /** Count requests that are themselves rejected (over-limit) against the limit (default `false`). */
-  readonly countRejected?: boolean;
-}
-```
+> The standalone `limiter()` primitive (and `rateLimitedDoer`) still takes a **static**
+> `LimiterOptions` (`limit`/`window`/`algorithm`/`store`/`prefix`/`countRejected`) — dynamic
+> resolution is a middleware feature, since only the request path carries an `io`.
 
 Notes grounded in the source:
 
@@ -303,6 +313,24 @@ const app = implement(api)
   })
   .server()
 ```
+
+### Example — per-caller limits (dynamic `limit`)
+
+```ts
+// shared.ts — auth provides { user: { id, plan } }
+const limit = rateLimit({ requires: [auth] })
+// server.ts
+rateLimit.server(limit, {
+  key: (io) => io.ctx.user.id,
+  limit: (io) => (io.ctx.user.plan === 'pro' ? 1_000 : 100), // premium callers get more
+  window: 60_000,                                            // keep window/algorithm stable per key
+  algorithm: 'sliding-window',
+})
+```
+
+Any of `limit` / `window` / `algorithm` / `countRejected` can be a `(io) => value`. Derive
+`window`/`algorithm` from a stable identity attribute (plan, tenant) — not from time or the
+request path — so a given key always maps to the same bucketing.
 
 ### Example — per-IP limiting without `requires`
 

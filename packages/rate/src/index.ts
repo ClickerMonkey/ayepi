@@ -41,9 +41,9 @@ import { unlimitedDoer, type Doer, type DoerTaskOptions } from '@ayepi/core/doer
 /** Default over-limit HTTP status. */
 const DEFAULT_STATUS = 429;
 /** Default key namespace. */
-const DEFAULT_PREFIX = 'rl:';
+export const DEFAULT_PREFIX = 'rl:';
 /** Default algorithm. */
-const DEFAULT_ALGORITHM: Algorithm = 'fixed-window';
+export const DEFAULT_ALGORITHM: Algorithm = 'fixed-window';
 /** Tokens consumed per request (token-bucket). */
 const TOKEN_COST = 1;
 /** Milliseconds per second — `Retry-After` / `RateLimit-Reset` are expressed in seconds. */

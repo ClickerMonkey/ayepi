@@ -180,6 +180,54 @@ describe('rateLimit middleware', () => {
     expect((await hit(app, 'b')).status).toBe(200); // different user, own budget
   });
 
+  it('limit can be derived per request — different callers get different budgets', async () => {
+    const app = makeApp({ limit: (io) => (io.ctx.user.id === 'pro' ? 3 : 1) });
+    expect((await hit(app, 'reg')).status).toBe(200); // regular: budget of 1
+    expect((await hit(app, 'reg')).status).toBe(429);
+    expect((await hit(app, 'pro')).status).toBe(200); // pro: budget of 3
+    expect((await hit(app, 'pro')).status).toBe(200);
+    expect((await hit(app, 'pro')).status).toBe(200);
+    expect((await hit(app, 'pro')).status).toBe(429);
+  });
+
+  it('the resolved limit surfaces in ctx.ratelimit and the RateLimit-* headers', async () => {
+    const app = makeApp({ limit: (io) => (io.ctx.user.id === 'pro' ? 10 : 2), alwaysHeaders: true });
+    const res = await hit(app, 'pro');
+    expect(res.headers.get('ratelimit-limit')).toBe('10');
+    expect((await res.json()).remaining).toBe(9);
+  });
+
+  it('window and algorithm can be derived per request', async () => {
+    // pro uses token-bucket, everyone else fixed-window; both cap at 1 — exercises both resolution paths
+    const app = makeApp({ limit: 1, window: 1000, algorithm: (io) => (io.ctx.user.id === 'pro' ? 'token-bucket' : 'fixed-window') });
+    expect((await hit(app, 'pro')).status).toBe(200);
+    expect((await hit(app, 'pro')).status).toBe(429);
+    expect((await hit(app, 'reg')).status).toBe(200);
+    expect((await hit(app, 'reg')).status).toBe(429);
+  });
+
+  it('threads a fully-dynamic rule (limit/window/algorithm/countRejected) through to the store per request', async () => {
+    const seen: RateLimitRule[] = [];
+    const mem = memoryStore();
+    const store: RateLimitStore = {
+      consume: (k, rule, t) => {
+        seen.push(rule);
+        return mem.consume(k, rule, t);
+      },
+    };
+    const app = makeApp({
+      store,
+      limit: (io) => (io.ctx.user.id === 'pro' ? 100 : 5),
+      window: () => 30_000,
+      algorithm: () => 'token-bucket',
+      countRejected: (io) => io.ctx.user.id === 'strict',
+    });
+    await hit(app, 'pro');
+    await hit(app, 'strict');
+    expect(seen[0]).toEqual({ limit: 100, window: 30_000, algorithm: 'token-bucket', countRejected: false });
+    expect(seen[1]).toEqual({ limit: 5, window: 30_000, algorithm: 'token-bucket', countRejected: true });
+  });
+
   it('honors a custom status, JSON message, and headers', async () => {
     const app = makeApp({
       status: 503,
