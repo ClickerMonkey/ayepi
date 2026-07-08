@@ -126,6 +126,7 @@ export type {
   CallerDebounceConfig,
   CallerRateLimitConfig,
   CallerRetryConfig,
+  CallerReplayConfig,
   Tagger,
   ClientCache,
   ClientCacheOptions,
@@ -134,6 +135,10 @@ export type {
   CacheHit,
   KVStore,
 } from './caller';
+
+/* --- connectivity (online/offline tracking) --- */
+export { createConnectivity } from './connectivity';
+export type { Connectivity, ConnStatus, ConnectivityOptions, WhenOnlineOptions } from './connectivity';
 
 /* --- websocket transport --- */
 export type {

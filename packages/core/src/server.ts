@@ -448,6 +448,7 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
           method: e.method, path: e.path, ws: e.ws, httpOnly: e.httpOnly, streamIn: e.streamInCt, itemsIn: e.itemsIn,
           streamOut: e.streamOutCt, items: e.items, p: e.p, q: e.q, b: e.bRaw ? 'raw' : e.b, f: e.f,
           hasBody: Boolean(e.def.cfg.body), hasHeaders: Boolean(e.def.cfg.headers), multi: e.multi, bodyEnc: e.bodyEnc,
+          sideEffects: e.def.cfg.sideEffects,
         } satisfies ManifestEndpoint,
       ]),
     ),

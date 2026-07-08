@@ -95,6 +95,15 @@ export interface EndpointConfig {
   readonly doc?: EndpointDoc;
   /** HTTP method (default `POST`). */
   readonly method?: HttpMethod;
+  /**
+   * Whether calling this endpoint mutates server state. Read by the client's
+   * {@link caller} to decide if a call is **safe to replay** after a transient
+   * disconnect (a replay re-issues the same request). When omitted it defaults
+   * from the method — only `GET` is treated as side-effect-free. Set `false` on
+   * an idempotent non-GET (e.g. a `POST` search) to make it replay-safe, or
+   * `true` to opt a `GET` out of automatic replay.
+   */
+  readonly sideEffects?: boolean;
   /** Custom path: a `:key` string, or a {@link path} template whose schemas join the params kind. */
   readonly path?: string | AnyPathTemplate;
   /** Explicit WebSocket id (default: the un-injected url pattern + method). */
@@ -344,6 +353,7 @@ export function manifestFromSpec(spec: AnySpec): Manifest {
           hasHeaders: Boolean(e.def.cfg.headers),
           multi: e.multi,
           bodyEnc: e.bodyEnc,
+          sideEffects: e.def.cfg.sideEffects,
         } satisfies ManifestEndpoint,
       ]),
     ),

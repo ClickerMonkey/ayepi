@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { z } from 'zod';
-import { spec, endpoint, implement, server, client } from '../src/index';
+import { spec, endpoint, implement, server, client, ApiError } from '../src/index';
 
 const api = spec({
   endpoints: {
@@ -109,9 +109,13 @@ describe('client upload progress (XHR path)', () => {
     expect(seen).toEqual([{ loaded: 8, total: 8 }]); // the non-computable event was ignored
   });
 
-  it('rejects with a TypeError on a network error', async () => {
+  it('surfaces a network error as a DISCONNECTED ApiError', async () => {
     xhrMode = 'neterr';
-    await expect(sdk.call('up', { doc: new File(['x'], 'd.txt'), title: 'T' }, { onUploadProgress: () => {} })).rejects.toBeInstanceOf(TypeError);
+    // network failures are normalized at the client boundary to the same envelope the ws path
+    // produces, so `instanceof ApiError` + code DISCONNECTED works uniformly (and drives caller replay).
+    const err = await sdk.call('up', { doc: new File(['x'], 'd.txt'), title: 'T' }, { onUploadProgress: () => {} }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 0, code: 'DISCONNECTED' });
   });
 
   it('rejects with AbortError when the signal is already aborted', async () => {

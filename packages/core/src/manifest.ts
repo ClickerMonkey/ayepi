@@ -52,6 +52,13 @@ export interface ManifestEndpoint {
   readonly multi: boolean;
   /** Body wire encoding, or `null` when there is no body. */
   readonly bodyEnc: 'json' | 'urlencoded' | null;
+  /**
+   * Whether calling this endpoint mutates server state — governs whether the
+   * client {@link caller} may **replay** it after a transient disconnect.
+   * Optional/additive: when absent, replay-safety is derived from `method`
+   * (only `GET` is treated as side-effect-free). Read defensively.
+   */
+  readonly sideEffects?: boolean;
 }
 
 /** Runtime description of a single server-pushed event channel. */

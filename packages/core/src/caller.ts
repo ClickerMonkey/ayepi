@@ -17,6 +17,8 @@
 
 import type { AnyEndpoint } from './endpoint';
 import type { CallArgs, CallReturn, ClientData } from './payload';
+import { ApiError } from './errors';
+import { createConnectivity, type Connectivity } from './connectivity';
 
 /* ============================================================================
  * Stable keys
@@ -234,10 +236,17 @@ export interface CallerContext {
   cacheFor(store: CacheStoreSpec | undefined): ClientCache;
   /** Invalidate `tags` across **every** cache this client has created. */
   invalidateTags(tags: readonly string[]): void;
+  /** The client's shared online/offline tracker (drives replay + `onOnline`/`onOffline`). */
+  readonly connectivity: Connectivity;
 }
 
-/** Create the shared caller context. `defaults` seed each store's cache (`max`/`ttl`/`store`). */
-export function createCallerContext(defaults: ClientCacheOptions = {}): CallerContext {
+/**
+ * Create the shared caller context. `defaults` seed each store's cache
+ * (`max`/`ttl`/`store`); `connectivity` is the client's shared online/offline
+ * tracker — a standalone one is created when the client doesn't supply it, so
+ * `ctx.connectivity` is always present.
+ */
+export function createCallerContext(defaults: ClientCacheOptions = {}, connectivity: Connectivity = createConnectivity()): CallerContext {
   const caches = new Map<CacheStoreSpec, ClientCache>();
   const cacheFor = (store: CacheStoreSpec | undefined): ClientCache => {
     const spec = store ?? defaults.store ?? 'memory';
@@ -254,6 +263,7 @@ export function createCallerContext(defaults: ClientCacheOptions = {}): CallerCo
       cacheFor(undefined); // ensure the default cache exists so a lone invalidator still works
       for (const c of caches.values()) {c.invalidateTags(tags);}
     },
+    connectivity,
   };
 }
 
@@ -316,6 +326,27 @@ export interface CallerRetryConfig {
   readonly jitter?: number;
 }
 
+/**
+ * Per-caller replay-on-reconnect config (or `true`/`false` to enable/disable).
+ *
+ * When the connection drops mid-call, a replay-enabled caller **waits for
+ * connectivity to return** and re-issues the request instead of rejecting — so a
+ * transient disconnect is invisible to the caller. Only endpoints declared
+ * replay-safe (`sideEffects: false`, or a `GET`) replay by default; set
+ * {@link force} to replay a side-effecting endpoint too (**at-least-once** — the
+ * server may process the request twice).
+ */
+export interface CallerReplayConfig {
+  /** Safety cap on resends across disconnect→reconnect cycles (default: unbounded). */
+  readonly maxRetries?: number;
+  /** Overall wall-clock budget (ms) for the whole call across cycles; give up after it. */
+  readonly timeout?: number;
+  /** Per-wait fallback cap (ms) so waiting for reconnection always makes progress (default 1000). */
+  readonly backoff?: number;
+  /** Replay even side-effecting endpoints (at-least-once; use only for idempotent-by-key work). */
+  readonly force?: boolean;
+}
+
 /** Options for {@link ApiClient.caller}. Each enabled feature is applied as its own wrapper layer. */
 export interface CallerOptions<E extends AnyEndpoint> {
   /** Cache responses keyed by the call's data (TTL, tags, stale-while-revalidate, store). */
@@ -326,6 +357,13 @@ export interface CallerOptions<E extends AnyEndpoint> {
   readonly rateLimit?: CallerRateLimitConfig;
   /** Retry a failed call with exponential backoff ({@link CallerRetryConfig}). */
   readonly retry?: CallerRetryConfig;
+  /**
+   * Replay the call after a transient disconnect instead of rejecting
+   * ({@link CallerReplayConfig}). Defaults **on** for replay-safe endpoints
+   * (`sideEffects: false` / `GET`); pass `false` to opt out, or a config with
+   * `force: true` to replay a side-effecting endpoint too.
+   */
+  readonly replay?: boolean | CallerReplayConfig;
   /** Only deliver the most recent call's response — supersede (abort) older in-flight calls. */
   readonly lastOnly?: boolean;
   /** Coalesce concurrent identical calls into one in-flight request. */
@@ -342,6 +380,10 @@ export interface CallerOptions<E extends AnyEndpoint> {
   readonly onError?: (error: unknown, data: ClientData<E>) => void;
   /** Fired when a call settles (either way). */
   readonly onSettled?: (data: ClientData<E>) => void;
+  /** Fired when the client's connectivity transitions to online. */
+  readonly onOnline?: () => void;
+  /** Fired when the client's connectivity transitions to offline. */
+  readonly onOffline?: () => void;
 }
 
 /** A configured caller for one endpoint — `call` applies the policy; plus control + status. */
@@ -535,6 +577,42 @@ const withRetry = (cfg: CallerRetryConfig): Layer => {
   };
 };
 
+/**
+ * Whether an error is a transient connection failure (not an application error) —
+ * the class of failure {@link withReplay} recovers from. Both transports surface a
+ * drop through the same envelope (`ApiError` status `0`, code `DISCONNECTED`): the
+ * ws frame protocol directly, and HTTP network failures via the client's boundary
+ * normalization. An `AbortError` (a `DOMException`) is correctly excluded.
+ */
+const isConnFailure = (err: unknown): boolean => err instanceof ApiError && err.status === 0 && err.code === 'DISCONNECTED';
+
+/**
+ * Replay-on-reconnect: on a connection failure, wait for connectivity to return
+ * (bounded, so it always makes progress) and re-issue the request, instead of
+ * rejecting. Innermost layer — it absorbs disconnects before any outer layer
+ * (retry/cache/dedupe) sees them, and re-runs only the base call. Applied only for
+ * replay-safe endpoints (or `cfg.force`), so side-effecting calls don't double-apply.
+ */
+const withReplay = (cfg: CallerReplayConfig, ctx: CallerContext): Layer => {
+  const maxRetries = cfg.maxRetries ?? Infinity;
+  const backoff = cfg.backoff ?? 1000;
+  return (next) => async (call, signal) => {
+    const deadline = cfg.timeout !== undefined ? Date.now() + cfg.timeout : Infinity;
+    let attempts = 0;
+    for (;;) {
+      try {
+        return await next(call, signal);
+      } catch (err) {
+        if (!isConnFailure(err) || attempts >= maxRetries) {throw err;}
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {throw err;}
+        attempts += 1;
+        await ctx.connectivity.whenOnline(signal, { timeout: Math.min(backoff, remaining) }); // rejects if aborted (cancel/supersede)
+      }
+    }
+  };
+};
+
 interface Queued {
   readonly call: Call;
   readonly resolve: (v: unknown) => void;
@@ -603,6 +681,10 @@ export interface CallerEndpoint {
   readonly streamOut: string | null;
   readonly items: boolean;
   readonly itemsIn: boolean;
+  /** HTTP method (loosely typed to avoid a hard manifest import). */
+  readonly method: string;
+  /** Whether the endpoint mutates server state; when absent, derived from `method`. */
+  readonly sideEffects?: boolean;
 }
 
 /**
@@ -643,6 +725,16 @@ export function makeCaller(name: string, m: CallerEndpoint, rawCall: (...args: u
   }
   if (options.rateLimit) {layers.push(withRateLimit(options.rateLimit));}
   if (options.retry) {layers.push(withRetry(options.retry));}
+  // replay is innermost (pushed last): it recovers connection drops before any outer layer sees them.
+  const replayable = m.sideEffects === false || (m.sideEffects === undefined && m.method === 'GET');
+  const replayCfg: CallerReplayConfig | null =
+    options.replay === false ? null : options.replay === undefined ? (replayable ? {} : null) : typeof options.replay === 'object' ? options.replay : {};
+  if (replayCfg && (replayable || replayCfg.force)) {layers.push(withReplay(replayCfg, ctx));}
+
+  // connection lifecycle hooks — subscribed for the caller's lifetime (independent of per-call state).
+  if (options.onOnline || options.onOffline) {
+    ctx.connectivity.subscribe((s) => (s === 'online' ? options.onOnline?.() : options.onOffline?.()));
+  }
 
   const invoke = compose(base, layers);
 

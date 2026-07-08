@@ -20,6 +20,8 @@
 
 export { client } from '../client';
 export type { ClientWs, ClientOptions, ApiClient, GetUrlKeys } from '../client';
+export { createConnectivity } from '../connectivity';
+export type { Connectivity, ConnStatus, ConnectivityOptions, WhenOnlineOptions } from '../connectivity';
 export { wsTransport } from '../ws-transport';
 export type { WsTransport, WsTransportOptions, WsState, BackoffOptions, HeartbeatOptions, WebSocketLike, WebSocketCtor, WsMessageEvent } from '../ws-transport';
 export { ApiError } from '../errors';

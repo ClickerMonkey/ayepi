@@ -103,6 +103,8 @@ export interface WsTransport extends ClientWs {
   close(): void;
   /** Current connection state. */
   readonly state: WsState;
+  /** Subscribe to state transitions (multi-subscriber; returns an unsubscribe function). */
+  onState(cb: (state: WsState) => void): () => void;
 }
 
 /**
@@ -138,11 +140,13 @@ export function wsTransport(url: string | (() => string), opts: WsTransportOptio
   const outbox: string[] = []; // frames buffered while connecting / queued while down
   const subs = new Map<string, string>(); // canonical sub key → original sub frame (replayed on reconnect)
   const openCalls = new Set<string>(); // in-flight call ids awaiting a terminal frame
+  const stateSubs = new Set<(s: WsState) => void>(); // onState() subscribers (in addition to opts.onStateChange)
 
   const setState = (s: WsState) => {
     if (s === state) {return;}
     state = s;
     opts.onStateChange?.(s);
+    for (const cb of [...stateSubs]) {cb(s);} // copy: a subscriber may unsubscribe during notification
   };
   const deliver = (raw: string) => messageCb?.(raw);
   const canon = (v: unknown): string => JSON.stringify(v ?? {}, Object.keys((v as Record<string, unknown>) ?? {}).sort());
@@ -297,6 +301,10 @@ export function wsTransport(url: string | (() => string), opts: WsTransportOptio
     },
     get state() {
       return state;
+    },
+    onState(cb: (s: WsState) => void) {
+      stateSubs.add(cb);
+      return () => void stateSubs.delete(cb);
     },
   };
 }

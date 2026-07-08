@@ -23,6 +23,7 @@ import type { EndpointConfig, AnySpec, AnyEndpoint, EventConfig, EventsOf } from
 import type { ClientData, CallArgs, CallReturn, CallOptsBase, UploadProgress } from './payload';
 import { splitPattern, buildParts } from './path';
 import { makeCaller, createCallerContext, type Caller, type CallerOptions, type CallerEndpoint, type ClientCacheOptions } from './caller';
+import { createConnectivity, type Connectivity, type ConnStatus } from './connectivity';
 
 /** Response statuses that must carry a null body (the `Response` constructor rejects a body for these). */
 const NULL_BODY_STATUS = new Set([101, 204, 205, 304]);
@@ -121,6 +122,14 @@ export interface ClientWs {
   send(frame: string): void;
   /** Register the handler the transport calls for each inbound frame. */
   onMessage(cb: (frame: string) => void): void;
+  /**
+   * Optional: observe connection-state transitions (multi-subscriber; returns an
+   * unsubscribe function). The client uses it to drive `connection` /
+   * caller replay-on-reconnect. Transports that omit it simply don't feed
+   * ws-derived connectivity — HTTP outcomes and browser events still do.
+   * Distinct from a `wsTransport`'s singular `onStateChange` construction option.
+   */
+  onState?(cb: (state: 'closed' | 'connecting' | 'open') => void): () => void;
 }
 
 /** Options for {@link client}. */
@@ -185,6 +194,15 @@ export interface ApiClient<S extends AnySpec> {
     name: K,
     ...args: [keyof ClientData<S['endpoints'][K]>] extends [never] ? [] : [data: ClientData<S['endpoints'][K]>]
   ): string;
+  /**
+   * The client's live online/offline state, aggregated across the ws transport,
+   * HTTP request outcomes, and (in a browser) native `online`/`offline` events.
+   * `subscribe` fires on every transition and returns an unsubscribe function.
+   */
+  readonly connection: {
+    readonly status: ConnStatus;
+    subscribe(cb: (status: ConnStatus) => void): () => void;
+  };
   /** Subscribe to a server-pushed event; returns an unsubscribe function. */
   on<K extends keyof EventsOf<S> & string>(
     name: K,
@@ -213,7 +231,10 @@ export interface ApiClient<S extends AnySpec> {
 export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
   const manifest = resolveManifest(opts.manifest);
   const doFetch = opts.fetchImpl ?? ((req: Request) => fetch(req));
-  const callerCtx = createCallerContext(opts.cache);
+  const connectivity: Connectivity = createConnectivity();
+  const callerCtx = createCallerContext(opts.cache, connectivity);
+  // drive connectivity from the ws transport's state when it exposes one (multi-subscriber onState)
+  opts.ws?.onState?.((s) => connectivity.report(s === 'open' ? 'online' : 'offline'));
   const baseHeaders = () => (typeof opts.headers === 'function' ? opts.headers() : (opts.headers ?? {}));
   const vcfg = (name: string): EndpointConfig | undefined => opts.validate?.endpoints[name]?.cfg;
   const vParse = (name: string, data: unknown): unknown => {
@@ -497,10 +518,23 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
     // upload progress needs XHR (fetch reports none); only for non-streaming up/down, and only where XHR exists.
     // this path bypasses a custom `fetchImpl`; without XHR it silently falls back to fetch (no progress).
     const onProgress = callOpts?.onUploadProgress;
-    const res =
-      onProgress && !m.streamIn && !m.streamOut && typeof XMLHttpRequest !== 'undefined'
-        ? await xhrSend(m.method, url.toString(), headers, body as XMLHttpRequestBodyInit | null, callOpts?.signal, onProgress)
-        : await doFetch(new Request(url, init));
+    // normalize the network boundary: a reachable server (any response) marks us online;
+    // a network failure (fetch/xhr reject with a TypeError) marks us offline and surfaces
+    // as the same DISCONNECTED envelope the ws path produces, so replay handles both uniformly.
+    let res: Response;
+    try {
+      res =
+        onProgress && !m.streamIn && !m.streamOut && typeof XMLHttpRequest !== 'undefined'
+          ? await xhrSend(m.method, url.toString(), headers, body as XMLHttpRequestBodyInit | null, callOpts?.signal, onProgress)
+          : await doFetch(new Request(url, init));
+    } catch (err) {
+      if (err instanceof TypeError) {
+        connectivity.report('offline');
+        throw new ApiError(0, 'DISCONNECTED', 'network request failed');
+      }
+      throw err; // AbortError (user cancel) or an unexpected error — propagate unchanged
+    }
+    connectivity.report('online');
     if (!res.ok) {
       const errBody = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } } | Json;
       const env = (errBody as { error?: { code?: string; message?: string } })?.error;
@@ -619,5 +653,12 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
     return makeCaller(name, m as CallerEndpoint, (...args: unknown[]) => call(name, ...args), callerCtx, options ?? {});
   }
 
-  return { call, on, url, caller } as unknown as ApiClient<S>; // internal cast: variadic impls behind the exact typed surface
+  const connection = {
+    get status() {
+      return connectivity.status;
+    },
+    subscribe: (cb: (status: ConnStatus) => void) => connectivity.subscribe(cb),
+  };
+
+  return { call, on, url, caller, connection } as unknown as ApiClient<S>; // internal cast: variadic impls behind the exact typed surface
 }
