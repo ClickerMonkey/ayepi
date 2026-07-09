@@ -16,6 +16,10 @@ import { client } from '@ayepi/core/client' // zod-free browser entry
 `zod` is a **peer dependency** (`^4`). The `@ayepi/core/client` entry contains
 zero zod runtime code.
 
+**Overload protection.** `server(api, [impl], { shed: { thresholdMs, sustainedMs, response } })`
+sheds load when the event loop falls behind — returning a response you choose (e.g. `503 Retry-After`)
+before doing work, until it recovers. Standalone `createLoadShedder` / `createLoopDelaySampler` too.
+
 Runtime adapters: [`@ayepi/node`](https://www.npmjs.com/package/@ayepi/node),
 [`@ayepi/bun`](https://www.npmjs.com/package/@ayepi/bun),
 [`@ayepi/deno`](https://www.npmjs.com/package/@ayepi/deno). The core is

@@ -159,6 +159,41 @@ const off  = sdk.on('jobProgress', { jobId: 'job-1' }, (d) => console.log(d.pct)
 Deno, or any fetch-native runtime. See the runnable, feature-exhaustive
 [`example.ts`](./example.ts) (it doubles as the type-test suite).
 
+## Load shedding (overload protection)
+
+A single Node process is one event loop. When it falls behind — usually CPU-bound work, but also
+GC pressure or a saturated downstream — every queued request gets slower and the process can
+spiral. `ServerOptions.shed` is the graceful alternative: watch the event-loop delay (a running
+average) and, once it's been over a threshold for long enough, return a **response you choose**
+(typically `503 Retry-After`) *before* doing any work — until the loop recovers.
+
+```ts
+server(api, [impl], {
+  shed: {
+    thresholdMs: 70,     // event-loop delay (running avg) that counts as "overloaded"
+    sustainedMs: 250,    // ...for this long before shedding starts
+    recoverMs: 500,      // ...and this long back under before it stops (hysteresis)
+    response: (req, info) =>
+      new Response('overloaded', { status: 503, headers: { 'retry-after': '1' } }),
+    exempt: (req) => new URL(req.url).pathname === '/healthz', // never shed health probes
+  },
+})
+```
+
+- Runs **ahead of routing and middleware**, so it protects the whole server for near-zero cost when
+  not shedding. CORS still wraps the shed response; `OPTIONS` preflight is always exempt.
+- **Event-loop delay** is measured by a dependency-free timer-drift sampler (works on any runtime).
+  On Node you can inject a higher-fidelity `LoopDelayMonitor` built on `perf_hooks.monitorEventLoopDelay`
+  via `shed.monitor`.
+- `response` is a `Response` (cloned per request) or a factory `(req, info) => Response`, where
+  `info` is `{ delayMs, thresholdMs, overloadedForMs }`.
+- Standalone building blocks are exported too: `createLoadShedder(opts)` and
+  `createLoopDelaySampler(opts)` — usable outside `server()` (e.g. to gate a queue worker).
+
+> Load shedding is adaptive to *actual health*; a global rate limit (`@ayepi/rate`) is a fixed
+> ceiling regardless of load. They compose: rate-limit for fairness/abuse, shed for self-protection.
+> To *find* the threshold worth setting, ramp the app with `@ayepi/stress`.
+
 ## Docs and manifest generation
 
 A server exposes three generators, all derived from the same spec:

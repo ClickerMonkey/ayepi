@@ -33,6 +33,8 @@ import { buildOpenapi } from './openapi';
 import { buildAsyncapi } from './asyncapi';
 import type { DocsOptions } from './docs-ui';
 import { normalizeDocs, swaggerHtml, redocHtml, asyncapiHtml } from './docs-ui';
+import type { LoadShedOptions } from './shed';
+import { createLoadShedder } from './shed';
 
 /* ---- internal constants ---- */
 /** Readable-side highWaterMark for the `$out` transform: accept the first chunk before a reader attaches so headers can commit. */
@@ -174,6 +176,13 @@ export interface ServerOptions {
    * spec JSON is generated once and cached in memory.
    */
   readonly docs?: boolean | DocsOptions;
+  /**
+   * Shed load when the **event loop** falls behind: once its delay (a running average) has been
+   * over `thresholdMs` for `sustainedMs`, requests get your `response` (typically `503 Retry-After`)
+   * instead of being accepted — until the loop recovers (`recoverMs`). Guards the whole server,
+   * ahead of routing and middleware; `OPTIONS` preflight is always exempt. See {@link LoadShedOptions}.
+   */
+  readonly shed?: LoadShedOptions;
 }
 
 /** The assembled server: a fetch handler, a ws handler, the manifest, `emit`, and doc generators. */
@@ -324,6 +333,10 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
     : [error: { readonly missingHandlers: MissingHandlers<S, H> }]
 ): Server<S> {
   const options = rest[0] as ServerOptions | undefined; // internal cast: the error branch never reaches runtime
+
+  /* ---- load shedding: watch the event loop, shed (before any work) once it's sustainedly behind ---- */
+  const shedder = options?.shed ? createLoadShedder(options.shed) : undefined;
+  shedder?.start(); // the monitor's timer is unref'd — it never keeps the process alive
 
   /* ---- mutable live registries (shared by boot + install/uninstall) ---- */
   const table = new Map<string, (payload: never) => unknown>();
@@ -1080,7 +1093,9 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
       if (options.cors.maxAge !== undefined) {headers.set('access-control-max-age', String(options.cors.maxAge));}
       return new Response(null, { status: 204, headers });
     }
-    let res = await fetchHandler(req);
+    // Shed before doing any work: if the loop is overloaded, return the configured response
+    // (CORS-wrapped below, like any other). OPTIONS is exempt inside the shedder.
+    let res = shedder && shedder.shouldShed(req) ? await shedder.respond(req) : await fetchHandler(req);
     if (ch || req.method === 'HEAD') {
       const headers = new Headers(res.headers);
       for (const [k, v] of Object.entries(ch ?? {})) {headers.set(k, v);}

@@ -30,6 +30,10 @@ export type { RetryOptions, RetryState } from './retry';
 export { createMetrics, formatPrometheus, DEFAULT_BUCKETS } from './stats';
 export type { Metrics, MetricsOptions, Counter, Gauge, Summary, StatKind, StatMeta, StatValue, StatSummary, StatBucket, Labels } from './stats';
 
+/* --- load shedding --- */
+export { createLoadShedder, createLoopDelaySampler } from './shed';
+export type { LoadShedOptions, LoadShedder, ShedInfo, LoopDelayMonitor, LoopDelaySamplerOptions } from './shed';
+
 /* --- path templates --- */
 export type { AnyPathTemplate, PathTemplate, PathPart } from './path';
 export { splitPattern, joinPattern, matchParts, buildParts, path } from './path';
