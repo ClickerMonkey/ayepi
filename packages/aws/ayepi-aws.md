@@ -205,6 +205,49 @@ deleted. Notes:
 - `store` is any [`@ayepi/files`](./ayepi-files.md) `FileStore` — typically an `s3Files({...})`,
   but a filesystem store or your own works too.
 
+### `@ayepi/aws/http` — a well-pooled request handler
+
+The SDK's default `NodeHttpHandler` caps outbound connections at **`maxSockets: 50` per client**.
+Under a busy work system (S3 + SQS + more, each its own client) that cap is often the first thing to
+break — calls queue behind 50 sockets and latency balloons, with no error, just slowness. This
+subpath builds a keep-alive handler (and shareable agents) with a higher cap.
+
+```ts
+import { S3Client } from '@aws-sdk/client-s3';
+import { SQSClient } from '@aws-sdk/client-sqs';
+import { pooledRequestHandler, sharedHttpAgents } from '@ayepi/aws/http';
+
+// One handler per client:
+const s3 = new S3Client({ region, requestHandler: pooledRequestHandler({ maxSockets: 256 }) });
+
+// ...or share ONE pool across many clients (bounds total sockets, better reuse):
+const agents = sharedHttpAgents({ maxSockets: 512 });
+const s3b = new S3Client({ requestHandler: pooledRequestHandler(agents) });
+const sqs = new SQSClient({ requestHandler: pooledRequestHandler(agents) });
+```
+
+```ts
+function pooledRequestHandler(opts?: PooledHandlerOptions): NodeHttpHandler
+function sharedHttpAgents(opts?: PooledAgentsOptions): { httpAgent; httpsAgent }
+
+interface PooledAgentsOptions {
+  readonly maxSockets?: number;      // per host (default 128; SDK default 50)
+  readonly maxTotalSockets?: number; // across all hosts (default: unlimited)
+  readonly keepAlive?: boolean;      // default true — avoids TCP churn / port exhaustion
+  readonly keepAliveMsecs?: number;  // default 1000
+}
+interface PooledHandlerOptions extends PooledAgentsOptions {
+  readonly connectionTimeout?: number; // ms
+  readonly requestTimeout?: number;    // ms
+  readonly httpAgent?: HttpAgent;       // bring your own (overrides the pool knobs)
+  readonly httpsAgent?: HttpsAgent;
+}
+```
+
+Keep-alive is on by default so connections are reused instead of churned — which also sidesteps
+ephemeral-port / `TIME_WAIT` exhaustion under sustained load. Requires `@smithy/node-http-handler`
+(an optional peer, already a transitive dependency of the AWS SDK clients).
+
 ### `@ayepi/aws` (root) — the retry seam
 
 The root subpath exports the shared resilience machinery both backends build on. You rarely call

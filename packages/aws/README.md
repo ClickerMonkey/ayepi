@@ -49,6 +49,11 @@ const w = createWork({ queue, pubsub, store, work: [/* ... */] as const })
   and rethrown.
 - **You own the SDK clients.** The clients are optional peer deps — you construct and configure
   them (region, credentials, endpoint) and manage their lifecycle.
+- **Connection pooling.** The SDK's default handler caps outbound connections at `maxSockets: 50`
+  per client — a common bottleneck for a busy S3+SQS work system. `@ayepi/aws/http` exports
+  `pooledRequestHandler({ maxSockets })` and `sharedHttpAgents(...)` — a keep-alive handler with a
+  higher cap to pass as `requestHandler`, or one shared pool across clients:
+  `new S3Client({ requestHandler: pooledRequestHandler({ maxSockets: 256 }) })`.
 
 ## Options
 
