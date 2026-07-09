@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/otel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Observability middleware for @ayepi/core — request/response logging, trace-context enrichment, configurable fields, and per-endpoint overrides",
   "license": "MIT",
   "publishConfig": {

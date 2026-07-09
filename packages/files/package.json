@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/files",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Generic S3-like key-based file storage for @ayepi/core — stream-first put/get, prefix listing, presigned upload/download URLs, with a filesystem default and stream/transfer helpers",
   "license": "MIT",
   "publishConfig": {

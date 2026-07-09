@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A plugin system for @ayepi/core — compose an API from independent plugins (spec + implementation + state service + lifecycle + deps) and install/uninstall them into a running server",
   "license": "MIT",
   "publishConfig": {

@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/rate",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Rate-limiting middleware for @ayepi/core — pluggable stores, multiple algorithms, customizable 429 responses",
   "license": "MIT",
   "publishConfig": {

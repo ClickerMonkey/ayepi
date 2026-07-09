@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/stress",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Load/stress harness for ayepi apps — archetype workloads (noop/io/net/cpu), a closed-loop generator, breaking-point search, and server-side instrumentation (event-loop lag, memory, in-flight, latency).",
   "license": "MIT",
   "type": "module",

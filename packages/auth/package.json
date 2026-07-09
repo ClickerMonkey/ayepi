@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/auth",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Authentication middleware for @ayepi/core — typed Bearer (JWT) and Basic auth with signing/verification, user context, and OpenAPI security docs",
   "license": "MIT",
   "publishConfig": {
