@@ -95,6 +95,7 @@ Cross-cutting conventions, true across the whole library:
 | [`./ayepi-codec.md`](./ayepi-codec.md) | round-trip rich values (`Date`/`BigInt`/`Map`/`Set`/`Error`/custom) through JSON. |
 | [`./ayepi-updown.md`](./ayepi-updown.md) | orchestrate **graceful startup/shutdown** with dependencies + liveness/readiness probes. |
 | [`./ayepi-plugin.md`](./ayepi-plugin.md) | compose an API from independent **plugins** and **install/uninstall** them into a running server. |
+| [`./ayepi-stress.md`](./ayepi-stress.md) | **load/stress-test** an app: archetype workloads (noop/io/net/cpu), a closed-loop generator, breaking-point search, and server-side instrumentation (event-loop lag, memory, in-flight). |
 
 ## Task → doc cheatsheet
 
@@ -110,6 +111,7 @@ Cross-cutting conventions, true across the whole library:
 - **Expose as MCP tools / mock the API** → `./ayepi-mcp.md` / `./ayepi-mock.md`.
 - **Graceful shutdown / health probes** → `./ayepi-updown.md` (flush logs via `logger.close()`).
 - **Build a modular, hot-pluggable app** → `./ayepi-plugin.md`.
+- **Find the breaking point / load-test / harden under load** → `./ayepi-stress.md`.
 
 ## In this repository
 

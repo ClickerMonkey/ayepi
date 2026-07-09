@@ -150,6 +150,9 @@ importers:
       '@ayepi/work':
         specifier: workspace:*
         version: link:../work
+      '@smithy/node-http-handler':
+        specifier: ^4.0.0
+        version: 4.8.1
       '@vitest/coverage-v8':
         specifier: ^2.1.8
         version: 2.1.9(vitest@2.1.9(@types/node@22.19.21))
@@ -506,6 +509,27 @@ importers:
       testcontainers:
         specifier: ^10.13.0
         version: 10.28.0
+      tsdown:
+        specifier: ^0.12.0
+        version: 0.12.9(publint@0.3.21)(typescript@5.9.3)
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.21)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
+  packages/stress:
+    devDependencies:
+      '@ayepi/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ayepi/node':
+        specifier: workspace:*
+        version: link:../node
+      publint:
+        specifier: ^0.3.0
+        version: 0.3.21
       tsdown:
         specifier: ^0.12.0
         version: 0.12.9(publint@0.3.21)(typescript@5.9.3)

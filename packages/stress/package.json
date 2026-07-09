@@ -1,0 +1,55 @@
+{
+  "name": "@ayepi/stress",
+  "version": "0.2.0",
+  "description": "Load/stress harness for ayepi apps — archetype workloads (noop/io/net/cpu), a closed-loop generator, breaking-point search, and server-side instrumentation (event-loop lag, memory, in-flight, latency).",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/stress"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/stress#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
+  "bin": {
+    "ayepi-stress": "bin/ayepi-stress.mjs"
+  },
+  "files": ["dist", "bin", "ayepi-*.md"],
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:load": "vitest run --config vitest.load.config.ts",
+    "publint": "publint"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@ayepi/core": "workspace:^",
+    "@ayepi/node": "workspace:^",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@ayepi/core": "workspace:*",
+    "@ayepi/node": "workspace:*",
+    "publint": "^0.3.0",
+    "tsdown": "^0.12.0",
+    "vitest": "^2.1.8",
+    "zod": "^4.4.3"
+  },
+  "keywords": ["ayepi", "load", "stress", "benchmark", "throughput", "breaking-point", "resilience", "backpressure"]
+}
