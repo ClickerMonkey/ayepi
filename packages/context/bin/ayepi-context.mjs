@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ayepi-docs — flatten the ayepi agent-reference docs into your repo.
+ * ayepi-context — flatten the ayepi agent-reference docs into your repo.
  *
  * The per-package `ayepi-<pkg>.md` files ship flat in each package root
  * (`node_modules/@ayepi/<pkg>/ayepi-<pkg>.md`), and the `ayepi.md` index links to them
@@ -8,9 +8,9 @@
  * plus every installed package's doc(s) into one flat folder, so the links resolve — on
  * GitHub, in your editor, and when handed to a coding agent.
  *
- *   npx @ayepi/docs               # → ./docs
- *   npx @ayepi/docs .claude       # → ./.claude
- *   npx @ayepi/docs docs --prune  # de-link index entries for packages you didn't install
+ *   npx @ayepi/context               # → ./docs
+ *   npx @ayepi/context .claude       # → ./.claude
+ *   npx @ayepi/context docs --prune  # de-link index entries for packages you didn't install
  *
  * Re-run after upgrading/adding @ayepi packages to resync.
  */
@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`Usage: ayepi-docs [target-dir] [--prune]
+  console.log(`Usage: ayepi-context [target-dir] [--prune]
 
   target-dir   where to write the flat docs (default: docs)
   --prune      de-link index entries whose package isn't installed
@@ -36,7 +36,7 @@ const DOC_RE = /^ayepi-.*\.md$/;
 /** The canonical index: shipped inside this package, or the repo root when run from source. */
 function resolveIndex() {
   const candidates = [
-    join(here, '..', 'ayepi.md'), // published layout: packages/docs/ayepi.md
+    join(here, '..', 'ayepi.md'), // published layout: packages/context/ayepi.md
     join(here, '..', '..', '..', 'ayepi.md'), // source layout: repo root
   ];
   return candidates.find((p) => existsSync(p));
@@ -64,7 +64,7 @@ function scopeDirs() {
 
 const index = resolveIndex();
 if (!index) {
-  console.error('ayepi-docs: could not locate the bundled ayepi.md index.');
+  console.error('ayepi-context: could not locate the bundled ayepi.md index.');
   process.exit(1);
 }
 
@@ -102,6 +102,6 @@ for (const [name, src] of found) copyFileSync(src, join(target, name));
 if (found.size === 0) {
   console.warn(`ayepi-docs: no @ayepi/* packages found under node_modules — copied ayepi.md only.`);
 } else {
-  console.log(`ayepi-docs: synced ayepi.md + ${found.size} package doc(s) → ${target}/`);
+  console.log(`ayepi-context: synced ayepi.md + ${found.size} package doc(s) → ${target}/`);
 }
-if (prune && prunedCount) console.log(`ayepi-docs: de-linked ${prunedCount} index entr${prunedCount === 1 ? 'y' : 'ies'} for uninstalled packages.`);
+if (prune && prunedCount) console.log(`ayepi-context: de-linked ${prunedCount} index entr${prunedCount === 1 ? 'y' : 'ies'} for uninstalled packages.`);

@@ -28,7 +28,7 @@ const user = await sdk.call('getUser', { id: 'u1' })    // fully typed, one data
 
 > **Working with an LLM/coding agent?** Start with [`ayepi.md`](ayepi.md) — an index that
 > explains the mental model and routes to the right per-package `ayepi-<pkg>.md` reference for
-> whatever you're building. Run `npx @ayepi/docs` in your project to pull the index plus every
+> whatever you're building. Run `npx @ayepi/context` in your project to pull the index plus every
 > installed package's reference, flat, into `./docs` (where the links resolve).
 
 ## Packages

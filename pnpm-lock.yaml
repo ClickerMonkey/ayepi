@@ -229,6 +229,12 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
 
+  packages/context:
+    devDependencies:
+      publint:
+        specifier: ^0.3.0
+        version: 0.3.21
+
   packages/core:
     dependencies:
       zod:
@@ -274,12 +280,6 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
-
-  packages/docs:
-    devDependencies:
-      publint:
-        specifier: ^0.3.0
-        version: 0.3.21
 
   packages/env:
     devDependencies:

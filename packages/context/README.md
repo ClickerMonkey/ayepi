@@ -1,6 +1,6 @@
-# @ayepi/docs
+# @ayepi/context
 
-Flatten the **ayepi agent-reference docs** into your repo with one command.
+Pull **ayepi's agent context** — the flat agent-reference docs — into your repo with one command.
 
 ayepi ships its LLM/agent docs as flat markdown: an `ayepi.md` index that links to a
 per-package `ayepi-<pkg>.md` reference for each `@ayepi/*` package. Those per-package files
@@ -12,9 +12,9 @@ your editor, and when you point a coding agent at them.
 ## Usage
 
 ```bash
-npx @ayepi/docs             # → ./docs
-npx @ayepi/docs .claude     # → any target directory
-npx @ayepi/docs docs --prune  # de-link index rows for packages you didn't install
+npx @ayepi/context             # → ./docs
+npx @ayepi/context .claude     # → any target directory
+npx @ayepi/context docs --prune  # de-link index rows for packages you didn't install
 ```
 
 Run it from your project root (wherever `node_modules/` lives). Re-run after adding or
@@ -22,7 +22,7 @@ upgrading `@ayepi/*` packages to resync. To wire it into your project:
 
 ```jsonc
 // package.json
-"scripts": { "docs:sync": "ayepi-docs" }
+"scripts": { "context:sync": "ayepi-context" }
 ```
 
 ## What it does
