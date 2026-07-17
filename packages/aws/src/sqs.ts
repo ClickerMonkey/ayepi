@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { SendMessageCommand, ReceiveMessageCommand, DeleteMessageCommand, ChangeMessageVisibilityCommand, type SQSClient, type ReceiveMessageCommandOutput } from '@aws-sdk/client-sqs';
+import { SendMessageCommand, ReceiveMessageCommand, DeleteMessageCommand, ChangeMessageVisibilityCommand, GetQueueAttributesCommand, type SQSClient, type ReceiveMessageCommandOutput, type GetQueueAttributesCommandOutput } from '@aws-sdk/client-sqs';
 import type { Queue, PulledWork, PushOptions } from '@ayepi/work';
 import type { FileStore } from '@ayepi/files';
 import { makeRun, type ResilientOptions } from './index';
@@ -158,6 +158,14 @@ export function sqsQueue(opts: SqsQueueOptions): Queue {
     fail: (pulled, delay) =>
       run(async () => {
         await client.send(new ChangeMessageVisibilityCommand({ QueueUrl: queueUrl, ReceiptHandle: handleOf(pulled).receiptHandle, VisibilityTimeout: visSecs(delay ?? 0) }));
+      }),
+
+    size: () =>
+      run(async (): Promise<number> => {
+        const out = (await client.send(
+          new GetQueueAttributesCommand({ QueueUrl: queueUrl, AttributeNames: ['ApproximateNumberOfMessages'] }),
+        )) as GetQueueAttributesCommandOutput;
+        return Number(out.Attributes?.ApproximateNumberOfMessages ?? '0');
       }),
   };
 }

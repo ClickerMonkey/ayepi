@@ -48,6 +48,19 @@ describe('sqsQueue', () => {
     expect(calls[0]).toMatchObject({ name: 'SendMessageCommand', input: { QueueUrl: 'Q', MessageBody: '{"id":1}', DelaySeconds: 3 } });
   });
 
+  it('size reads ApproximateNumberOfMessages from GetQueueAttributes', async () => {
+    const { client, calls } = mockSqs({ GetQueueAttributesCommand: { Attributes: { ApproximateNumberOfMessages: '42' } } });
+    const q = sqsQueue({ client, queueUrl: 'Q' });
+    expect(await q.size!()).toBe(42);
+    expect(calls[0]).toMatchObject({ name: 'GetQueueAttributesCommand', input: { QueueUrl: 'Q', AttributeNames: ['ApproximateNumberOfMessages'] } });
+  });
+
+  it('size defaults to 0 when the attribute is absent', async () => {
+    const { client } = mockSqs({ GetQueueAttributesCommand: {} });
+    const q = sqsQueue({ client, queueUrl: 'Q' });
+    expect(await q.size!()).toBe(0);
+  });
+
   it('offloads a large body to S3 and sends a pointer', async () => {
     const { client, calls } = mockSqs({});
     const { store, m } = memStore();
