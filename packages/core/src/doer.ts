@@ -17,6 +17,11 @@
  * A rate-limiting doer (start-rate cap), `rateLimitedDoer`, lives in `@ayepi/rate`,
  * built on this interface and that package's limiter primitives.
  *
+ * {@link Doer.do} is fire-and-forget (returns void, swallows errors — the driver owns failure).
+ * Use {@link doWith} when a doer governs request-scoped work and you need the task's result or throw.
+ * The bounded doers can also raise a **sustained-backlog** alarm — see
+ * {@link BoundedDoerOptions.onBacklog}.
+ *
  * @module
  */
 
@@ -43,6 +48,32 @@ export interface Doer {
   do(task: () => Promise<void>, opts?: DoerTaskOptions): void;
   /** Resolve once every accepted task (running + pending) has settled. */
   done(): Promise<void>;
+}
+
+/**
+ * Submit `fn` to `doer` and get its result back. {@link Doer.do} is fire-and-forget — it returns
+ * void and swallows the task's error (the driver owns failure) — so this is what you want when a
+ * doer governs request-scoped work (e.g. throttling outbound API calls) and you need the value, or
+ * to `await`/`catch` the failure. Ordering/priority still apply via `opts`.
+ *
+ * ```ts
+ * const apiDoer = balancedDoer({ max: 8 })
+ * const user = await doWith(apiDoer, () => fetchUser(id), { group: tenantId, priority: 1 })
+ * ```
+ *
+ * Note: like `do`, this never applies backpressure — it always enqueues. Gate on `doer.available()`
+ * yourself (or shed) if you need to reject rather than queue.
+ */
+export function doWith<T>(doer: Doer, fn: () => Promise<T>, opts?: DoerTaskOptions): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    doer.do(async () => {
+      try {
+        resolve(await fn());
+      } catch (err) {
+        reject(err);
+      }
+    }, opts);
+  });
 }
 
 /* ---- unlimited ---- */
@@ -95,6 +126,16 @@ interface PendingTask {
 /** Returns the index in `pending` of the task to run next. */
 type Picker = (pending: readonly PendingTask[], runningByGroup: ReadonlyMap<string, number>) => number;
 
+/** Details of a sustained backlog, passed to {@link BoundedDoerOptions.onBacklog}. */
+export interface BacklogInfo {
+  /** Tasks waiting for a slot right now (the queue depth). */
+  readonly pending: number;
+  /** Tasks currently running. */
+  readonly running: number;
+  /** How long the queue has been *continuously* non-empty (ms). */
+  readonly nonEmptyForMs: number;
+}
+
 /** Options shared by the bounded doers. */
 export interface BoundedDoerOptions {
   /** Max concurrently running. */
@@ -103,6 +144,17 @@ export interface BoundedDoerOptions {
   readonly buffer?: number;
   /** Clock for the default `createdAt` (default `Date.now`). */
   readonly now?: () => number;
+  /**
+   * Notified when the pending queue stays **continuously non-empty** past
+   * {@link BoundedDoerOptions.backlogAfterMs} — a sustained backlog (the cap can't keep up with
+   * arrivals). Purely observational (for alerting/autoscaling); it must not throw — if it does, the
+   * throw is ignored. Requires `backlogAfterMs` to be set.
+   */
+  readonly onBacklog?: (info: BacklogInfo) => void;
+  /** How long the queue must stay non-empty before {@link BoundedDoerOptions.onBacklog} first fires (ms). */
+  readonly backlogAfterMs?: number;
+  /** Re-fire `onBacklog` every this many ms while still backed up. Omit to fire once per backlog episode. */
+  readonly backlogEveryMs?: number;
 }
 
 function boundedDoer(pick: Picker, opts: BoundedDoerOptions): Doer {
@@ -116,6 +168,40 @@ function boundedDoer(pick: Picker, opts: BoundedDoerOptions): Doer {
   let seq = 0;
   const held = (): number => running + pending.length;
   const bump = (group: string, by: number): void => void runningByGroup.set(group, (runningByGroup.get(group) ?? 0) + by);
+
+  /* ---- sustained-backlog watch (optional; one unref'd timer, only while backed up) ---- */
+  const watch = opts.onBacklog !== undefined && opts.backlogAfterMs !== undefined;
+  let nonEmptySince: number | null = null;
+  let backlogTimer: ReturnType<typeof setTimeout> | null = null;
+  const armBacklog = (ms: number): void => {
+    backlogTimer = setTimeout(fireBacklog, ms)
+    ;(backlogTimer as { unref?: () => void }).unref?.();
+  };
+  function fireBacklog(): void {
+    try {
+      opts.onBacklog!({ pending: pending.length, running, nonEmptyForMs: now() - nonEmptySince! });
+    } catch {
+      /* an observer must never disrupt the doer */
+    }
+    if (opts.backlogEveryMs !== undefined) {armBacklog(opts.backlogEveryMs);} // keep notifying while backed up
+    else {backlogTimer = null;} // fire-once per episode
+  }
+  // Called whenever `pending` changes: start the clock when the queue first fills, stop it when it drains.
+  const syncBacklog = (): void => {
+    if (!watch) {return;}
+    if (pending.length > 0) {
+      if (nonEmptySince === null) {
+        nonEmptySince = now();
+        armBacklog(opts.backlogAfterMs!);
+      }
+    } else if (nonEmptySince !== null) {
+      nonEmptySince = null;
+      if (backlogTimer) {
+        clearTimeout(backlogTimer);
+        backlogTimer = null;
+      }
+    }
+  };
 
   const drain = (): void => {
     while (running < max && pending.length > 0) {
@@ -133,6 +219,7 @@ function boundedDoer(pick: Picker, opts: BoundedDoerOptions): Doer {
           if (held() === 0) {for (const r of idle.splice(0)) {r();}}
         });
     }
+    syncBacklog();
   };
 
   return {

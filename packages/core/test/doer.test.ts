@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { unlimitedDoer, balancedDoer, priorityDoer, ageDoer, type DoerTaskOptions } from '../src/doer';
+import { unlimitedDoer, balancedDoer, priorityDoer, ageDoer, doWith, type DoerTaskOptions, type BacklogInfo } from '../src/doer';
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** A harness of tasks that record their start order and block until released. */
 function controllable() {
@@ -193,5 +194,81 @@ describe('bounded available()', () => {
     h.release('y');
     await d.done();
     expect(d.available()).toBe(4);
+  });
+});
+
+describe('doWith', () => {
+  it('resolves with the task result (respecting the doer)', async () => {
+    const d = unlimitedDoer();
+    await expect(doWith(d, async () => 42)).resolves.toBe(42);
+  });
+
+  it('rejects when the task throws (unlike fire-and-forget do)', async () => {
+    const d = unlimitedDoer();
+    await expect(doWith(d, async () => { throw new Error('nope'); })).rejects.toThrow('nope');
+  });
+
+  it('forwards ordering opts to the doer', async () => {
+    const d = priorityDoer({ max: 1, buffer: 10 });
+    const order: string[] = [];
+    const first = doWith(d, async () => { order.push('first'); }); // takes the free slot
+    const lo = doWith(d, async () => { order.push('lo'); }, { priority: 1 });
+    const hi = doWith(d, async () => { order.push('hi'); }, { priority: 9 });
+    await Promise.all([first, lo, hi]);
+    expect(order).toEqual(['first', 'hi', 'lo']); // higher priority ran before lower
+  });
+});
+
+describe('bounded doer — sustained-backlog watch', () => {
+  it('fires onBacklog once after the queue stays non-empty past backlogAfterMs', async () => {
+    const seen: BacklogInfo[] = [];
+    const d = ageDoer({ max: 1, onBacklog: (i) => seen.push(i), backlogAfterMs: 20 });
+    const h = controllable();
+    d.do(h.make('a')); // runs
+    d.do(h.make('b')); // pending
+    d.do(h.make('c')); // pending → queue non-empty (depth 2)
+    await wait(45);
+    expect(seen).toHaveLength(1); // fire-once (no backlogEveryMs)
+    expect(seen[0]!.pending).toBe(2);
+    expect(seen[0]!.running).toBe(1);
+    expect(seen[0]!.nonEmptyForMs).toBeGreaterThanOrEqual(15);
+    h.release('a'); await tick();
+    h.release('b'); await tick();
+    h.release('c'); await d.done();
+  });
+
+  it('re-fires every backlogEveryMs while still backed up', async () => {
+    const seen: BacklogInfo[] = [];
+    const d = ageDoer({ max: 1, onBacklog: (i) => seen.push(i), backlogAfterMs: 15, backlogEveryMs: 15 });
+    const h = controllable();
+    d.do(h.make('a'));
+    d.do(h.make('b'));
+    await wait(55); // ~fires at 15, 30, 45
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    h.release('a'); await tick();
+    h.release('b'); await d.done();
+  });
+
+  it('does not fire if the backlog drains before the threshold', async () => {
+    const seen: BacklogInfo[] = [];
+    const d = ageDoer({ max: 1, onBacklog: (i) => seen.push(i), backlogAfterMs: 50 });
+    const h = controllable();
+    d.do(h.make('a'));
+    d.do(h.make('b')); // backlog forms, timer armed for 50ms
+    await tick();
+    h.release('a'); await tick(); // b admitted → queue empties → timer cleared
+    h.release('b'); await d.done();
+    await wait(60); // past the original threshold
+    expect(seen).toHaveLength(0);
+  });
+
+  it('a throwing onBacklog is swallowed and never wedges the doer', async () => {
+    const d = ageDoer({ max: 1, onBacklog: () => { throw new Error('observer boom'); }, backlogAfterMs: 15 });
+    const h = controllable();
+    d.do(h.make('a'));
+    d.do(h.make('b'));
+    await wait(30); // fires + throws + swallowed
+    h.release('a'); await tick();
+    h.release('b'); await d.done(); // still drains cleanly
   });
 });
