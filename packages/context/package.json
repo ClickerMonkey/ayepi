@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/context",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pull ayepi's agent context into your repo — flatten ayepi.md + every installed @ayepi/* package's ayepi-*.md into one folder to point a coding agent at.",
   "license": "MIT",
   "publishConfig": {

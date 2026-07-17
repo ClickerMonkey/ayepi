@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/env",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Typed, lazy, reactive environment/config on zod — env({...}) reads process.env, records, .env/JSON files; coerces scalars and JSON-decodes complex types; computed fields, aliasing, and async/dynamic (live, subscribable) values",
   "license": "MIT",
   "publishConfig": {
