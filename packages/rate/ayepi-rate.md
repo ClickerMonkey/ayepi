@@ -96,8 +96,8 @@ Everything below is exported. `@internal` symbols are intentionally omitted.
 | `limiter` | function | Standalone limiter primitive (`check`/`reset`/`rule`). |
 | `rateLimitResponse` | function | Build a 429 `Response` from limiter info. |
 | `rateLimitHeaders` | function | Compute the `RateLimit-*` header map from limiter info. |
-| `memoryStore` | function | The bundled in-process store (all three algorithms). |
-| `rateLimitedDoer` | function | A `Doer` that caps task **start rate**. |
+| `memoryStore` | function | The bundled in-process store (all three algorithms); `memoryStore(opts?)` — tunable eviction (`sweepEvery`/`idleMs`). |
+| `rateLimitedDoer` | function | A `Doer` that caps task **start rate** — global + optional **per-group** limit, plus a backlog watch. |
 | `Algorithm` | type | `'fixed-window' \| 'sliding-window' \| 'token-bucket'`. |
 | `RateLimitInfo` | interface | Limiter state exposed to handlers + headers. |
 | `RateLimitResult` | interface | `RateLimitInfo` + `allowed`. |
@@ -107,7 +107,11 @@ Everything below is exported. `@internal` symbols are intentionally omitted.
 | `LimiterOptions` | interface | Base config (`limit`/`window`/`algorithm`/`store`/`prefix`). |
 | `RateLimitResponseOptions` | interface | `status`/`message`/`headers` for `rateLimitResponse`. |
 | `RateLimitDefOptions` | interface | Options for the `rateLimit` def (`name`/`requires`). |
-| `RateLimitedDoerOptions` | interface | Options for `rateLimitedDoer`. |
+| `RateLimitedDoerOptions` | interface | Options for `rateLimitedDoer` (global + group limits, backlog watch). |
+| `RateLimitedDoer` | interface | The doer `rateLimitedDoer` returns (a `Doer` whose `do` takes `RateTaskOptions`). |
+| `RateTaskOptions` | interface | Per-task options — `DoerTaskOptions` + `groupLimit`/`groupWindow`/`groupAlgorithm`. |
+| `RateLimitedBacklogInfo` | interface | `{ pending, nonEmptyForMs }` passed to the doer's `onBacklog`. |
+| `MemoryStoreOptions` | interface | `{ sweepEvery?, idleMs? }` — tune `memoryStore` eviction. |
 | `Limiter` | interface | The object `limiter()` returns. |
 
 ### Server subpath `@ayepi/rate/server`
@@ -222,7 +226,7 @@ interface RateLimitServerOptions<M extends AnyMiddleware> {
 > `onError` to observe the failure (it fires either way). `rateLimitedDoer` takes an `onError`
 > too: a store error there is reported and admission retried — it never strands pending tasks.
 
-> The standalone `limiter()` primitive (and `rateLimitedDoer`) still takes a **static**
+> The standalone `limiter()` primitive (and `rateLimitedDoer`) takes a **static**
 > `LimiterOptions` (`limit`/`window`/`algorithm`/`store`/`prefix`/`countRejected`) — dynamic
 > resolution is a middleware feature, since only the request path carries an `io`.
 

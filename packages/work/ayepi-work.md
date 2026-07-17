@@ -275,6 +275,9 @@ bundled in-memory backend and an `unlimitedDoer`.
 | `logContext` | `(input, type) => object` | — |
 | `onEvent` | `(event: WorkEvent) => void` | — |
 | `onError` | `(err, phase: 'commit' \| 'queue') => void` | — |
+| `onBacklog` | `(info: WorkBacklogInfo) => void` (sustained-saturation alarm; requires `backlogAfterMs`) | — (off) |
+| `backlogAfterMs` | `number` (ms continuously behind before `onBacklog` first fires) | — |
+| `backlogEveryMs` | `number` (re-fire cadence while still behind) | — (once per episode) |
 | `onFailure` | `FailureClassifier` (default; per-type overrides) | — (retry) |
 | `dlq` | `Queue` (readable — redrive source when idle) | — (off) |
 | `redriveCount` | `number` (max moved per idle poll) | `10` |
@@ -568,6 +571,50 @@ adaptiveDelay({
 It's **stateful** (the current pause + last counts live in the closure), so create **one**
 per work system. Pass `types` to protect a specific downstream — e.g. watch only the type that
 hits a rate-limited API. Or read `ctx.metrics` directly in your own hook for a custom policy.
+
+### Sustained-backlog detection — `onBacklog`
+
+Where `backpressure` throttles *intake*, `onBacklog` **observes** the opposite: the worker loop
+falling behind and staying there. Set `onBacklog` together with `backlogAfterMs` to be notified
+when the loop stays **continuously behind** for that long — a sustained-saturation alarm for
+alerting or autoscaling. It's purely observational (it changes no engine behavior) and **must not
+throw** (a throw is ignored). `backlogAfterMs` is **required** for `onBacklog` to fire at all.
+
+"Behind" is measured every tick: the loop counts as behind when it either **can't pull** (all doers
+saturated, no free slots) **or** a queue keeps returning a **full share** (more work waiting than
+it's draining). A tick where it pulls and starts work without any queue staying full resets the
+"behind" clock. Once the loop has been *continuously* behind for `backlogAfterMs`, `onBacklog` fires
+with a `WorkBacklogInfo`; give `backlogEveryMs` to re-fire on that cadence while it stays behind, or
+omit it to fire **once per episode**. The moment the loop catches up the timer clears, so a new
+episode starts the countdown fresh.
+
+```ts
+interface WorkBacklogInfo {
+  active: number          // items in flight right now (polled + accepted: awaiting a slot or running)
+  backedUpForMs: number   // how long the loop has been *continuously* behind (ms)
+  queued?: number         // approx messages waiting, summed across queues that implement size() (see below)
+}
+```
+
+```ts
+import { createWork } from '@ayepi/work'
+
+createWork({
+  work: [...] as const,
+  onBacklog: ({ active, queued, backedUpForMs }) =>
+    alert(`work backed up ${backedUpForMs}ms — ${active} in flight${queued !== undefined ? `, ~${queued} queued` : ''}`),
+  backlogAfterMs: 2000,   // fire once the loop has been behind for 2s straight
+  // backlogEveryMs: 5000, // (optional) re-alert every 5s while still behind
+})
+```
+
+**Honest limitation.** The `Queue` port has no *required* depth (`pop` leases, it doesn't count), so
+`onBacklog` fundamentally reports **that** the system is behind and **for how long** (plus the
+in-flight `active` count) — not a literal count of queued-but-unclaimed jobs. `queued` is filled in
+**only** when a backend implements the optional [`Queue.size?()`](./ayepi-work-ports.md#queue--the-durable-work-log)
+(the engine sums it across every queue that does), and is `undefined` when none do. The bundled
+`memoryQueue` implements it, as does the SQS queue (`@ayepi/aws/sqs`). One unref'd timer runs, only
+while behind, and is cleared on `stop()`.
 
 ## Deferral & scheduling
 

@@ -166,6 +166,7 @@ The returned [`Queue`](./ayepi-work-ports.md#queue--the-durable-work-log) maps o
 | `heartbeat(pulled, visibility)` | `ChangeMessageVisibility` | extends the lease to `ceil(visibility/1000)` s, **clamped to ≤ 43200 s** |
 | `ack(pulled)` | `DeleteMessage` | permanently removes the message (+ deletes the offloaded S3 body) |
 | `fail(pulled, delay?)` | `ChangeMessageVisibility` | returns the message early: `VisibilityTimeout` = `ceil((delay ?? 0)/1000)` s, **clamped to ≤ 43200 s** |
+| `size()` | `GetQueueAttributes` | reads `ApproximateNumberOfMessages` and returns it as a number (`0` when absent) |
 
 **SQS range clamping (far-future scheduling).** SQS rejects out-of-range values, so the queue
 clamps each duration into SQS's allowed range: `DelaySeconds` to **0–900 s** (15 min) on `push`,
@@ -184,6 +185,11 @@ horizons or keep distant schedules sparse.
   `max`. Each `PulledWork.attempt` comes from the message's `ApproximateReceiveCount` (delivery
   count, starting at 1); `handle` is an opaque `{ receiptHandle, s3Key? }` you round-trip to
   `heartbeat`/`ack`/`fail`.
+- **`size`** implements the optional `Queue.size()` — a single `GetQueueAttributes` reading
+  `ApproximateNumberOfMessages` (returned as a number, `0` when the attribute is absent, wrapped in
+  `retry` like every other call). It's what lets `@ayepi/work`'s sustained-backlog alarm
+  (`createWork({ onBacklog })`) report real SQS queue depth (`queued`). The count is **approximate**
+  — it's SQS's own `ApproximateNumberOfMessages`, not an exact tally.
 - **Dead-lettering** is the queue's own SQS **redrive policy** — configured on the queue (or its
   DLQ) in AWS, not here. After `maxReceiveCount` failed deliveries SQS moves the message to the
   DLQ natively. (`sqsQueue` does not implement the optional `Queue.deadLetter` hook.)

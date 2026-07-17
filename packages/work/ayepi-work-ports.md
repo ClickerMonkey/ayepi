@@ -45,6 +45,7 @@ interface Queue {
   ack(pulled: PulledWork): void | Promise<void>                               // permanently remove (completed)
   fail(pulled: PulledWork, delay?: number): void | Promise<void>              // return to queue, visible after `delay`
   deadLetter?(body: string, error: string): void | Promise<void>             // optional dead-letter sink
+  size?(): number | Promise<number>                                          // optional approx depth — feeds onBacklog's `queued`
 }
 
 interface PushOptions {
@@ -69,6 +70,14 @@ arrived **before** its `startAt`) so it becomes visible again after `delay`. A b
 single delay is capped (e.g. SQS) need only honor `delay` up to its own ceiling — the engine
 re-checks `startAt` on the next pop and re-defers until the item is actually due (see
 [Early-arrival re-defer](#early-arrival-re-defer-far-future-scheduling)).
+
+`size?()` is **optional** — an approximate count of messages currently in the queue (best-effort,
+backend-defined, may include in-flight leases). Keep it cheap (a single count/attribute call). When
+present, the engine sums it across every queue and reports it as `queued` in
+[`onBacklog`](./ayepi-work.md#sustained-backlog-detection--onbacklog); when no queue implements it,
+`queued` is simply `undefined` (the port carries no *required* depth). The bundled `memoryQueue`
+implements it (see [`MemoryQueue` test extras](#memoryqueue-test-extras)); the SQS queue
+(`@ayepi/aws/sqs`) implements it via `GetQueueAttributes` `ApproximateNumberOfMessages`.
 
 > **State the engine guarantees won't leak.** Each leased/dispatched item's transient state is
 > paired: an acquire returns its own teardown, and the runner always runs it in a `finally`, so the

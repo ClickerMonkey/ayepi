@@ -113,6 +113,11 @@ const send = defineWork('send', handler, { doer: rateLimitedDoer({ limit: 100, w
 another picks it up — shard work types across a fleet. **`onEvent(event)`** fires
 `queued` / `started` / `succeeded` / `failed` (with `willRetry`) / `group-done`.
 
+**`onBacklog(info)`** (with `backlogAfterMs`) fires when the worker loop stays continuously
+behind — a sustained-saturation alarm reporting `{ active, backedUpForMs, queued? }` (`queued`
+is real depth when the `Queue` implements the optional `size()`, as `memoryQueue` and the
+SQS queue do). Purely observational — for alerting/autoscaling.
+
 ## Batching
 
 When per-item work is wasteful but a bulk call is cheap (embeddings, bulk inserts,

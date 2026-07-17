@@ -97,6 +97,16 @@ const doer = rateLimitedDoer({ limit: 100, window: 60_000, algorithm: 'token-buc
 const w = createWork({ work: [sendEmail] as const, doer })   // ≤ 100 sends/min
 ```
 
+**Two-tier limiting.** Add a `groupLimit` (a default, or per task) and a task must clear both
+the global limit **and** its `group`'s limit — e.g. a global API cap plus a per-user/per-model
+cap. A hot group is skipped (not blocking others), groups needn't be known up front (buckets
+auto-evict when idle), and a shared `store`/`groupStore` (Redis) enforces both tiers across a fleet:
+
+```ts
+rateLimitedDoer({ limit: 1000, window: 60_000, groupLimit: 50 })
+  .do(() => callModel(req), { group: `${userId}:${modelId}`, groupLimit: 200 }) // per-request override
+```
+
 ## Algorithms
 
 - `fixed-window` (default) — simple counter per window.

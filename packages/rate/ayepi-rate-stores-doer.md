@@ -49,15 +49,26 @@ Memcached, …); only `consume` is required.
 ### `memoryStore` (default, bundled)
 
 ```ts
-function memoryStore(): RateLimitStore
+function memoryStore(opts?: MemoryStoreOptions): RateLimitStore
+
+interface MemoryStoreOptions {
+  /** Sweep expired/idle entries once every this many `consume` calls (default 1000). */
+  readonly sweepEvery?: number;
+  /** Drop an idle token-bucket after this long with no activity (ms, default 10 min). */
+  readonly idleMs?: number;
+}
 ```
 
 An in-process store implementing all three algorithms, zero dependencies. It is the
-default when no `store` is passed. Expired counters and idle token buckets are swept
-lazily (amortized: a sweep runs once per ~1000 `consume` calls; idle buckets are dropped
-after ~10 minutes of inactivity since they refill to full anyway). **Single process only**
-— two server instances each get their own independent budget. Use the Redis store to share
-a limit across pods.
+default when no `store` is passed. **Single process only** — two server instances each get
+their own independent budget; use the Redis store to share a limit across pods.
+
+**Bounded memory for dynamic keys.** Entries are swept lazily, so an unbounded, not-known-in-advance
+key space — e.g. per-user/per-model rate-limit **groups** (see `rateLimitedDoer` below) — doesn't grow
+without bound: a windowed counter is dropped once its window has elapsed, and an idle `token-bucket`
+after `idleMs` (default 10 min; they refill to full anyway). Active keys live long enough to enforce
+the limit; idle ones go away. For high churn, lower `sweepEvery` (tighter memory, a little more scan
+cost) and/or `idleMs`: `memoryStore({ sweepEvery: 200, idleMs: 30_000 })`.
 
 ### `redisStore` — `@ayepi/rate/redis`
 
@@ -111,17 +122,51 @@ distributed store (verified by the integration test). `reset(key)` issues a `DEL
 ## `rateLimitedDoer` — gating task start rate
 
 ```ts
-function rateLimitedDoer(opts: RateLimitedDoerOptions): Doer
+function rateLimitedDoer(opts: RateLimitedDoerOptions): RateLimitedDoer
 
 interface RateLimitedDoerOptions extends LimiterOptions {
-  /** Limit key — a single shared bucket by default (`'doer'`), or derived per task. */
+  /** Limit key for the GLOBAL bucket — a single shared bucket by default (`'doer'`), or derived per task. */
   readonly key?: string | ((opts: DoerTaskOptions) => string);
+
+  // ── two-tier: an optional per-`group` limit on top of the global one ──
+  /** Default group limit (a second gate bucketed by a task's `group`). Per-task `groupLimit` overrides it; omit for global-only. */
+  readonly groupLimit?: number;
+  /** Derive a task's group bucket key (default `opts.group`). Return `undefined` to skip the group gate for a task. */
+  readonly groupKey?: (opts: DoerTaskOptions) => string | undefined;
+  /** Store for the group buckets (default: the global `store`). A distributed store limits groups across a fleet. */
+  readonly groupStore?: RateLimitStore;
+
+  // ── sustained-backlog watch (observational) ──
+  /** Fire while the pending queue stays continuously non-empty past `backlogAfterMs`. Must not throw. */
+  readonly onBacklog?: (info: RateLimitedBacklogInfo) => void;
+  /** How long the queue must stay non-empty before `onBacklog` first fires (ms). */
+  readonly backlogAfterMs?: number;
+  /** Re-fire `onBacklog` every this many ms while still backed up (omit to fire once). */
+  readonly backlogEveryMs?: number;
+
   /** Floor on the re-check delay for deferred tasks (ms, default 50). */
   readonly retryFloor?: number;
   /** Clock injection (default `Date.now`). */
   readonly now?: () => number;
   /** The doer that actually runs admitted tasks (default `unlimitedDoer`). Compose policies. */
   readonly doer?: Doer;
+}
+
+/** Per-task options — DoerTaskOptions (`group`/`priority`/`createdAt`) plus a per-request group-limit override. */
+interface RateTaskOptions extends DoerTaskOptions {
+  readonly groupLimit?: number;      // overrides the configured default; enables the group gate for this task
+  readonly groupWindow?: number;     // default: the global `window`
+  readonly groupAlgorithm?: Algorithm; // default: the global `algorithm`
+}
+
+/** A Doer whose `do` accepts RateTaskOptions (assignable to Doer). */
+interface RateLimitedDoer extends Doer {
+  do(task: () => Promise<void>, opts?: RateTaskOptions): void;
+}
+
+interface RateLimitedBacklogInfo {
+  readonly pending: number;         // tasks waiting on the rate limit
+  readonly nonEmptyForMs: number;   // how long the queue has been continuously non-empty
 }
 ```
 
@@ -135,8 +180,50 @@ A `Doer` (from `@ayepi/core/doer`) that caps the **start rate** of tasks using t
 policy. Excess tasks wait, **oldest-first**; with a distributed store this rate-limits
 **across a fleet**.
 
-A `Doer` exposes `available()`, `do(task, opts?)`, and `done()` — see the doer section of
-the core docs. `rateLimitedDoer`'s `available()` is `min(limit − pending, inner.available())`.
+A `Doer` exposes `available()`, `do(task, opts?)`, and `done()` — see the doer section
+below. `rateLimitedDoer`'s `available()` is `min(limit − pending, inner.available())`.
+
+### Two-tier: a global limit + a per-group limit
+
+Set a `groupLimit` (a configured default, or per task via `RateTaskOptions`) and a task must
+clear **both** the global limit and its `group`'s limit to be admitted — e.g. a global API cap
+plus a per-user / per-model / per-model-family cap. `group` and `groupLimit` are read at
+**admission time**, so groups need not be known up front.
+
+```ts
+import { rateLimitedDoer } from '@ayepi/rate'
+
+const doer = rateLimitedDoer({
+  limit: 1000, window: 60_000, algorithm: 'token-bucket', // global cap
+  groupLimit: 50,                                          // default per-group cap
+})
+
+// per-request override — the limit known at request time (e.g. a plan tier):
+doer.do(() => callModel(req), { group: `${userId}:${modelId}`, groupLimit: tier === 'pro' ? 200 : 20 })
+```
+
+Semantics:
+
+- **Both gates, group first.** The group gate is checked before the global. A denied check
+  consumes nothing (the group rule forces `countRejected: false`), so a task whose group is at
+  its limit is **skipped**, not admitted — and no global token is spent on it.
+- **Head-of-line avoidance.** A skipped (group-capped) task is left pending while **other
+  groups' tasks proceed**, so a hot user/model can't block everyone. Within a group, oldest-first.
+- **Global exhaustion stops the round.** When the shared global bucket is out, nothing more is
+  admitted this pass. Edge case: a task that cleared its group but then hits an exhausted global
+  had its group token spent (bounded, self-corrects on retry) — only when global is the bottleneck.
+- **Global-only when no group.** A task with no `group`, or no group limit in scope, passes straight to the global gate.
+- **Fleet-shared, bounded memory.** Point `groupStore` (and `store`) at `@ayepi/rate/redis` to
+  share both tiers across pods. The dynamic group key space is auto-evicted (memory sweep / Redis
+  TTL), so it doesn't grow without bound — see `memoryStore` above.
+
+### Sustained-backlog watch
+
+`onBacklog` fires with `{ pending, nonEmptyForMs }` once the pending queue has stayed
+continuously non-empty past `backlogAfterMs` (repeating every `backlogEveryMs`, or once if
+omitted) — a signal that the rate limit can't admit fast enough. Purely observational
+(alerting/autoscaling), a throw is ignored, and the timer is `unref`'d and cleared when the
+queue drains.
 
 ### Example — cap an `@ayepi/work` engine
 
@@ -174,6 +261,33 @@ const doer = rateLimitedDoer({
 ```
 
 With a static `key` string (or the default `'doer'`) all tasks share one bucket.
+
+---
+
+## The core `Doer` (`@ayepi/core/doer`)
+
+`rateLimitedDoer` builds on the runtime-agnostic `Doer` primitive:
+
+```ts
+interface Doer {
+  available(): number;                                   // how many tasks it will accept right now
+  do(task: () => Promise<void>, opts?: DoerTaskOptions): void; // fire-and-forget (swallows errors)
+  done(): Promise<void>;                                 // resolves when all accepted tasks settle
+}
+interface DoerTaskOptions { group?: string; priority?: number; createdAt?: number }
+```
+
+Bundled policies: **`unlimitedDoer`** (no cap), **`balancedDoer`** (cap N; fair-share across
+`group`s, then priority, then age), **`priorityDoer`** (cap N; highest priority first), **`ageDoer`**
+(cap N; oldest first). The three bounded doers share `BoundedDoerOptions` (`max`, `buffer?`, `now?`).
+
+- **`doWith(doer, fn, opts?)`** — submit a task and get its **result** back (`Promise<T>`), the
+  result-returning counterpart to the fire-and-forget `do` (which returns void and swallows the
+  error). Use it when a doer governs request-scoped work: `const user = await doWith(apiDoer, () => fetchUser(id), { group: tenantId })`.
+- **Sustained-backlog watch** — the bounded doers accept `onBacklog: (info) => void` with
+  `backlogAfterMs` / `backlogEveryMs`, firing `{ pending, running, nonEmptyForMs }` once the pending
+  queue stays continuously non-empty past the threshold (the doer analogue of `rateLimitedDoer`'s
+  `onBacklog`). Purely observational; one `unref`'d timer, only while backed up.
 
 ---
 
@@ -240,18 +354,21 @@ limiter's dependency middleware run first and their context is available — see
 
 ### The doer abstraction
 
-`rateLimitedDoer` keeps a `pending` queue. On each `drain`:
+`rateLimitedDoer` keeps a `pending` queue. Each `drain` scans it **oldest-first** and admits
+every task that clears its gates, skipping (not blocking on) group-capped ones:
 
-- if the inner doer has no capacity (`inner.available() <= 0`), it arms a short re-check
-  timer and stops;
-- otherwise it picks the **oldest** pending task (by `createdAt`, then submission `seq`),
-  calls `limiter.check(keyOf(task), now())`;
-- if denied, it arms a timer for `max(retryFloor, retryAfter)` and stops (drains again when
-  the limiter would allow);
-- if admitted, it removes the task and calls `inner.do(task.run, task.opts)`.
+- if the inner doer has no capacity (`inner.available() <= 0`), it records a short re-check and stops;
+- for the oldest not-yet-skipped task, it checks the **group gate first** (when a `group` + group
+  limit apply): a denied group check consumes nothing, so the task is **skipped** (left pending) and
+  the scan continues to other groups — recording that group's `retryAfter`;
+- then the **global gate** (`limiter.check(key, now)`): if denied, the shared bucket is out, so no
+  further task can be admitted this round and the scan stops (recording the global `retryAfter`);
+- if both allow, it removes the task and calls `inner.do(task.run, task.opts)`.
 
-`done()` resolves once `pending` is empty **and** the inner doer's `done()` resolves. The
-re-check timer is `unref`'d, so it won't keep a process alive on its own.
+After the scan, if tasks remain it arms **one** timer for the **soonest** recorded re-check
+(`max(retryFloor, soonest)`), so it drains again exactly when the earliest gate would allow. A
+store error on either gate is reported to `onError` and backs the round off by `retryFloor`. `done()`
+resolves once `pending` is empty **and** the inner doer's `done()` resolves. All timers are `unref`'d.
 
 ---
 
