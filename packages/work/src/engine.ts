@@ -1036,6 +1036,62 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   };
 
   let pollCursor = 0; // round-robin start across queues, so no queue is consistently polled last
+
+  /* ---- sustained-backlog watch (optional): fire while the loop stays continuously behind ---- */
+  const backlogWatch = opts.onBacklog !== undefined && opts.backlogAfterMs !== undefined;
+  let backedUpSince: number | null = null;
+  let backlogTimer: ReturnType<typeof setTimeout> | null = null;
+  const armBacklog = (ms: number): void => {
+    backlogTimer = setTimeout(() => void fireBacklog(), ms);
+    unref(backlogTimer);
+  };
+  /** Sum {@link Queue.size} across the queues that expose it; `undefined` if none do. Best-effort. */
+  const queuedDepth = async (): Promise<number | undefined> => {
+    let total = 0;
+    let any = false;
+    for (const q of distinctQueues()) {
+      if (typeof q.size !== 'function') {continue;}
+      try {
+        const s = await q.size();
+        if (Number.isFinite(s)) {
+          total += s;
+          any = true;
+        }
+      } catch {
+        /* size is best-effort — a backend hiccup must not break the alarm */
+      }
+    }
+    return any ? total : undefined;
+  };
+  async function fireBacklog(): Promise<void> {
+    const since = backedUpSince!; // non-null: the timer is cleared the moment the loop catches up
+    const queued = await queuedDepth();
+    if (backedUpSince === null) {return;} // loop caught up while we were measuring — don't fire
+    try {
+      opts.onBacklog!({ active: activeMap.size, backedUpForMs: now() - since, queued });
+    } catch {
+      /* an observer must never disrupt the loop */
+    }
+    if (opts.backlogEveryMs !== undefined) {armBacklog(opts.backlogEveryMs);} // keep notifying while behind
+    else {backlogTimer = null;} // fire-once per episode
+  }
+  // Called each loop tick with whether the engine is failing to keep up (can't pull, or a full queue remains).
+  const syncBacklog = (behind: boolean): void => {
+    if (!backlogWatch) {return;}
+    if (behind) {
+      if (backedUpSince === null) {
+        backedUpSince = now();
+        armBacklog(opts.backlogAfterMs!);
+      }
+    } else if (backedUpSince !== null) {
+      backedUpSince = null;
+      if (backlogTimer) {
+        clearTimeout(backlogTimer);
+        backlogTimer = null;
+      }
+    }
+  };
+
   const loop = async (): Promise<void> => {
     while (running) {
       try {
@@ -1048,6 +1104,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
         }
         const n = pollCount();
         if (n <= 0) {
+          syncBacklog(true); // doers saturated — can't take more work
           await sleep(pollInterval);
           continue;
         }
@@ -1067,6 +1124,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
           accepted += started.filter(Boolean).length;
         }
         pollCursor = (pollCursor + 1) % qs.length;
+        syncBacklog(anyFull); // a queue still returning a full share ⇒ more waiting than we're draining
         // the normal queues are idle (nothing pulled) and a DLQ is configured → redrive some dead work
         // back onto the flow, then loop immediately to pick it up.
         if (pulledTotal === 0 && opts.dlq && (await redriveFromDLQ()) > 0) {continue;}
@@ -1091,6 +1149,11 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   };
   const stop = async (): Promise<void> => {
     running = false;
+    backedUpSince = null;
+    if (backlogTimer) {
+      clearTimeout(backlogTimer);
+      backlogTimer = null;
+    }
     for (const cancel of scheduleCancels) {cancel();}
     scheduleCancels.clear();
     await loopPromise?.catch(() => {});

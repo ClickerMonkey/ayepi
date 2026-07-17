@@ -68,6 +68,12 @@ export interface Queue {
   fail(pulled: PulledWork, delay?: number): void | Promise<void>;
   /** Move a body to a dead-letter sink after exhausting retries (optional). */
   deadLetter?(body: string, error: string): void | Promise<void>;
+  /**
+   * Approximate number of messages currently in the queue (best-effort, backend-defined — may
+   * include in-flight leases). Optional; when present, the work engine reports queue depth as
+   * `queued` in {@link WorkSystemOptions.onBacklog}. Kept cheap (a single count/attribute call).
+   */
+  size?(): number | Promise<number>;
 }
 
 /**

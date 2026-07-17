@@ -412,6 +412,19 @@ export interface BackpressureContext {
   readonly active: number;
 }
 
+/** Passed to {@link WorkSystemOptions.onBacklog} while the worker loop can't keep up. */
+export interface WorkBacklogInfo {
+  /** Items in flight right now (polled + accepted: awaiting a doer slot or running). */
+  readonly active: number;
+  /** How long the loop has been *continuously* unable to keep up (ms). */
+  readonly backedUpForMs: number;
+  /**
+   * Approximate messages waiting across the queues that support it (summed {@link Queue.size}).
+   * `undefined` when no queue exposes a size — the port has no required depth. Best-effort.
+   */
+  readonly queued?: number;
+}
+
 /** Passed to {@link WorkSystemOptions.unhandledWorkGroup} when a group finishes with no waiter. */
 export interface UnhandledWorkGroupInfo {
   readonly groupId: string;
@@ -504,6 +517,20 @@ export interface WorkSystemOptions {
    * usual. Off by default; it must not throw — if it does, the throw is ignored.
    */
   readonly onError?: (err: unknown, phase: 'commit' | 'queue') => void;
+  /**
+   * Notified when the worker loop stays **continuously behind** past {@link WorkSystemOptions.backlogAfterMs}
+   * — every tick it either can't pull (doers saturated) or a queue keeps returning a full share (more
+   * work waiting than it's draining). A sustained-saturation alarm for autoscaling/alerting; purely
+   * observational, and it must not throw (a throw is ignored). Requires {@link WorkSystemOptions.backlogAfterMs}.
+   *
+   * Note: the {@link Queue} port exposes no depth, so this reports *that* the system is behind and for
+   * how long (plus the in-flight count) — not a literal count of queued-but-unclaimed jobs.
+   */
+  readonly onBacklog?: (info: WorkBacklogInfo) => void;
+  /** How long the loop must stay continuously behind before {@link WorkSystemOptions.onBacklog} first fires (ms). */
+  readonly backlogAfterMs?: number;
+  /** Re-fire `onBacklog` every this many ms while still behind. Omit to fire once per backlog episode. */
+  readonly backlogEveryMs?: number;
   /**
    * Default classifier for handler failures (a per-type {@link WorkOptions.onFailure} overrides it):
    * map an error to `'abort'` (dead-letter now), a `{ delay }`/`{ runAt }` reschedule (re-queue

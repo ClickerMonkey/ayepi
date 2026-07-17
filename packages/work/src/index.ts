@@ -60,6 +60,7 @@ export type {
   WorkEvent,
   WorkAcceptInfo,
   BackpressureContext,
+  WorkBacklogInfo,
   FailureDecision,
   FailureClassifier,
   WorkFailureInfo,
