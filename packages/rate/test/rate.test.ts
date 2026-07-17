@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { middleware, ctx, endpoint, spec, implement, server, client, reject, ApiError, type WsConn } from '@ayepi/core';
 import { rateLimit, type RateLimitServerOptions } from '../src/server';
-import { limiter, rateLimitResponse, memoryStore, rateLimitedDoer, type RateLimitRule, type RateLimitDef, type RateLimitStore } from '../src/index';
+import { limiter, rateLimitResponse, memoryStore, rateLimitedDoer, type RateLimitRule, type RateLimitDef, type RateLimitStore, type RateLimitedBacklogInfo } from '../src/index';
 
 /* ---------- algorithms via memoryStore (controlled `now`) ---------- */
 const consume = async (s: ReturnType<typeof memoryStore>, key: string, rule: RateLimitRule, now: number) => s.consume(key, rule, now);
@@ -403,5 +403,141 @@ describe('rateLimitedDoer — store errors are not fatal', () => {
         throw new Error('reporter boom');
       }),
     ).toBe(1); // throwing onError → ignored, still retries
+  });
+});
+
+describe('rateLimitedDoer — two-tier (global + per-group) limiting', () => {
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  it('admits only when BOTH the global and the group limit allow', async () => {
+    const ran: string[] = [];
+    const d = rateLimitedDoer({ limit: 100, window: 1000, algorithm: 'token-bucket', groupLimit: 1 });
+    d.do(async () => void ran.push('a1'), { group: 'A' });
+    d.do(async () => void ran.push('a2'), { group: 'A' }); // group A capped at 1
+    await wait(25);
+    expect(ran).toEqual(['a1']); // only one of group A is admitted; the other is deferred
+  });
+
+  it('a hot group does not block other groups (head-of-line avoidance), picking the oldest first', async () => {
+    const ran: string[] = [];
+    const d = rateLimitedDoer({ limit: 100, window: 1000, algorithm: 'token-bucket', groupLimit: 1 });
+    d.do(async () => void ran.push('a1'), { group: 'A' }); // takes group A's slot
+    // b1 is older than a2, so once a1 is admitted the drain considers b1 before a2 (oldest-first)
+    d.do(async () => void ran.push('a2'), { group: 'A', createdAt: 2 }); // group A now capped → skipped
+    d.do(async () => void ran.push('b1'), { group: 'B', createdAt: 1 }); // independent group → admitted
+    await wait(25);
+    expect(ran.sort()).toEqual(['a1', 'b1']);
+    expect(ran).not.toContain('a2');
+  });
+
+  it('honors a per-task groupLimit override (no configured default)', async () => {
+    const ran: string[] = [];
+    const d = rateLimitedDoer({ limit: 100, window: 1000, algorithm: 'token-bucket' }); // no default group limit
+    d.do(async () => void ran.push('a1'), { group: 'A', groupLimit: 1 });
+    d.do(async () => void ran.push('a2'), { group: 'A', groupLimit: 1 });
+    await wait(25);
+    expect(ran).toEqual(['a1']);
+  });
+
+  it('still enforces the global limit across groups (and its token is spent on group-cleared tasks)', async () => {
+    const ran: string[] = [];
+    const d = rateLimitedDoer({ limit: 1, window: 1000, algorithm: 'token-bucket', groupLimit: 10 });
+    d.do(async () => void ran.push('a'), { group: 'A' });
+    d.do(async () => void ran.push('b'), { group: 'B' });
+    await wait(25);
+    expect(ran).toHaveLength(1); // global cap of 1, regardless of group headroom
+  });
+
+  it('with no group (or no group limit) it is global-only', async () => {
+    const ran: string[] = [];
+    const d = rateLimitedDoer({ limit: 100, window: 1000, algorithm: 'token-bucket' });
+    d.do(async () => void ran.push('x')); // no group
+    d.do(async () => void ran.push('y'), { group: 'G' }); // group but no group limit anywhere
+    await wait(20);
+    expect(ran.sort()).toEqual(['x', 'y']);
+  });
+
+  it('a groupKey returning undefined skips the group gate for that task', async () => {
+    const ran: string[] = [];
+    const d = rateLimitedDoer({ limit: 100, window: 1000, algorithm: 'token-bucket', groupLimit: 1, groupKey: (o) => (o.priority === 9 ? undefined : o.group) });
+    d.do(async () => void ran.push('a1'), { group: 'A', priority: 9 }); // groupKey → undefined ⇒ no group gate
+    d.do(async () => void ran.push('a2'), { group: 'A', priority: 9 });
+    d.do(async () => void ran.push('c')); // no task opts → groupKey({}) → undefined ⇒ no group gate
+    await wait(20);
+    expect(ran.sort()).toEqual(['a1', 'a2', 'c']); // all admitted (group gate skipped, global has room)
+  });
+
+  it('resolves per-task group window/algorithm, else global window / default algorithm', async () => {
+    const a: string[] = [];
+    const d = rateLimitedDoer({ limit: 100, window: 1000, groupLimit: 1 }); // no global algorithm → group uses the default (fixed-window)
+    d.do(async () => void a.push('d1'), { group: 'D' });
+    d.do(async () => void a.push('d2'), { group: 'D' });
+    await wait(20);
+    expect(a).toEqual(['d1']);
+
+    const b: string[] = [];
+    const d2 = rateLimitedDoer({ limit: 100, window: 1000, algorithm: 'token-bucket' });
+    d2.do(async () => void b.push('e1'), { group: 'E', groupLimit: 1, groupWindow: 1000, groupAlgorithm: 'fixed-window' });
+    d2.do(async () => void b.push('e2'), { group: 'E', groupLimit: 1, groupWindow: 1000, groupAlgorithm: 'fixed-window' });
+    await wait(20);
+    expect(b).toEqual(['e1']);
+  });
+
+  it('reports a group-store error and backs off, then admits on recovery', async () => {
+    const errs: unknown[] = [];
+    let fail = true;
+    const mem = memoryStore();
+    const store: RateLimitStore = {
+      consume: (k, rule, t) => {
+        if (fail && k.includes('grp:')) {throw new Error('group store down');}
+        return mem.consume(k, rule, t);
+      },
+    };
+    const ran: string[] = [];
+    const d = rateLimitedDoer({ limit: 100, window: 1000, algorithm: 'token-bucket', groupLimit: 5, store, retryFloor: 5, onError: (e) => errs.push(e) });
+    d.do(async () => void ran.push('a'), { group: 'A' });
+    await wait(15);
+    expect(errs.length).toBeGreaterThanOrEqual(1);
+    expect(ran).toHaveLength(0);
+    fail = false;
+    await wait(25);
+    expect(ran).toEqual(['a']); // group store recovered → admitted
+  });
+
+  it('holds tasks when the inner doer is saturated', async () => {
+    const ran: string[] = [];
+    const inner = { available: () => 0, do: () => {}, done: () => Promise.resolve() };
+    const d = rateLimitedDoer({ limit: 100, window: 1000, algorithm: 'token-bucket', doer: inner, retryFloor: 5 });
+    d.do(async () => void ran.push('a'));
+    await wait(20);
+    expect(ran).toHaveLength(0); // inner has no slot → nothing admitted
+  });
+});
+
+describe('rateLimitedDoer — sustained-backlog watch', () => {
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  it('fires onBacklog while tasks stay queued on the limit, then clears as they drain', async () => {
+    const seen: RateLimitedBacklogInfo[] = [];
+    // limit 5 / 100ms token-bucket: 5 admit immediately, the rest queue and drain as tokens refill
+    const d = rateLimitedDoer({ limit: 5, window: 100, algorithm: 'token-bucket', onBacklog: (i) => seen.push(i), backlogAfterMs: 20, backlogEveryMs: 15 });
+    for (let i = 0; i < 12; i++) {d.do(async () => {});}
+
+    await wait(60);
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+    expect(seen[0]!.pending).toBeGreaterThan(0); // tasks waiting on the rate limit
+    expect(seen[0]!.nonEmptyForMs).toBeGreaterThanOrEqual(15);
+
+    await d.done(); // drains as tokens refill → backlog resets, clearing the repeating alarm
+  });
+
+  it('swallows a throwing onBacklog (fire-once path) and keeps draining', async () => {
+    let fired = 0;
+    const d = rateLimitedDoer({ limit: 1, window: 60, algorithm: 'token-bucket', onBacklog: () => { fired += 1; throw new Error('observer boom'); }, backlogAfterMs: 15 });
+    for (let i = 0; i < 4; i++) {d.do(async () => {});}
+
+    await wait(35);
+    expect(fired).toBeGreaterThanOrEqual(1); // fired once despite throwing; no backlogEveryMs → no repeat
+    await d.done(); // still drains cleanly
   });
 });

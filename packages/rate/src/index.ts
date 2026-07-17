@@ -253,16 +253,71 @@ export type RateLimitDef<R extends readonly AnyMiddleware[] = readonly []> = Mid
 /** Minimum re-check delay when a deferred task has no explicit retry hint (ms). */
 const DOER_RETRY_FLOOR = 50;
 
+/** Details of a sustained backlog, passed to {@link RateLimitedDoerOptions.onBacklog}. */
+export interface RateLimitedBacklogInfo {
+  /** Tasks waiting on the rate limit to admit them (the queue depth). */
+  readonly pending: number;
+  /** How long the queue has been *continuously* non-empty (ms). */
+  readonly nonEmptyForMs: number;
+}
+
+/**
+ * Per-task options for a {@link rateLimitedDoer} — {@link DoerTaskOptions} (`group`/`priority`/
+ * `createdAt`) plus a per-request **group limit** override. When a `group` and a group limit are
+ * present, the task must clear both the global limit **and** its group's limit to be admitted.
+ */
+export interface RateTaskOptions extends DoerTaskOptions {
+  /** Per-task group rate limit (a second gate, bucketed by `group`). Overrides {@link RateLimitedDoerOptions.groupLimit}. */
+  readonly groupLimit?: number;
+  /** Window for the group limit (ms; default: the global `window`). */
+  readonly groupWindow?: number;
+  /** Algorithm for the group limit (default: the global `algorithm`). */
+  readonly groupAlgorithm?: Algorithm;
+}
+
+/** A {@link Doer} whose `do` accepts {@link RateTaskOptions} — i.e. a per-task group limit. */
+export interface RateLimitedDoer extends Doer {
+  /** Accept a task; `opts` may carry a per-task `group` + `groupLimit` (a second, per-group gate). */
+  do(task: () => Promise<void>, opts?: RateTaskOptions): void;
+}
+
 /** Options for {@link rateLimitedDoer} — a {@link LimiterOptions} plus doer-specific knobs. */
 export interface RateLimitedDoerOptions extends LimiterOptions {
-  /** Limit key — a single shared bucket by default (`'doer'`), or derived per task. */
+  /** Limit key for the **global** bucket — a single shared bucket by default (`'doer'`), or derived per task. */
   readonly key?: string | ((opts: DoerTaskOptions) => string);
+  /**
+   * Default **group** limit — a second gate bucketed by a task's `group`, on top of the global limit.
+   * A per-task {@link RateTaskOptions.groupLimit} overrides it. Omit for no group gate (global only).
+   * The group window/algorithm default to the global ones unless overridden per task.
+   */
+  readonly groupLimit?: number;
+  /** Derive a task's group bucket key (default: `opts.group`). Return `undefined` to skip the group gate for a task. */
+  readonly groupKey?: (opts: DoerTaskOptions) => string | undefined;
+  /**
+   * Store for the group buckets (default: the global `store`). A distributed store limits groups
+   * across a fleet. Groups need not be known up front — bucket state is per-group and **auto-evicted
+   * when idle** (the {@link memoryStore} sweeps expired/idle keys; `@ayepi/rate/redis` sets TTLs), so
+   * an unbounded, dynamic group space (per-user/per-model) won't grow without bound. For high churn,
+   * pass a tuned store, e.g. `groupStore: memoryStore({ sweepEvery: 200, idleMs: 30_000 })`.
+   */
+  readonly groupStore?: RateLimitStore;
   /** Floor on the re-check delay for deferred tasks (ms, default 50). */
   readonly retryFloor?: number;
   /** Clock injection (default `Date.now`). */
   readonly now?: () => number;
   /** The doer that actually runs admitted tasks (default {@link unlimitedDoer}). Compose policies. */
   readonly doer?: Doer;
+  /**
+   * Notified when the pending queue stays **continuously non-empty** past
+   * {@link RateLimitedDoerOptions.backlogAfterMs} — a sustained backlog of tasks the rate limit can't
+   * admit fast enough. Purely observational (for alerting/autoscaling); it must not throw — if it
+   * does, the throw is ignored. Requires `backlogAfterMs`.
+   */
+  readonly onBacklog?: (info: RateLimitedBacklogInfo) => void;
+  /** How long the queue must stay non-empty before {@link RateLimitedDoerOptions.onBacklog} first fires (ms). */
+  readonly backlogAfterMs?: number;
+  /** Re-fire `onBacklog` every this many ms while still backed up. Omit to fire once per backlog episode. */
+  readonly backlogEveryMs?: number;
   /**
    * Observe a store error during admission (e.g. a distributed store hiccup). The drain loop
    * never crashes on it — the task stays pending and admission is retried shortly. Off by
@@ -273,7 +328,7 @@ export interface RateLimitedDoerOptions extends LimiterOptions {
 
 interface DoerPending {
   readonly run: () => Promise<void>;
-  readonly opts?: DoerTaskOptions;
+  readonly opts?: RateTaskOptions;
   readonly createdAt: number;
   readonly seq: number;
 }
@@ -293,19 +348,83 @@ interface DoerPending {
  * const doer = rateLimitedDoer({ limit: 100, window: 60_000, algorithm: 'token-bucket' })
  * const w = createWork({ work: [sendEmail] as const, doer })
  * ```
+ *
+ * **Two-tier limiting.** Set a `groupLimit` (default, or per task via {@link RateTaskOptions}) and a
+ * task must clear both the global limit **and** its `group`'s limit — e.g. a global API cap plus a
+ * per-user / per-model cap. The group gate is checked first (a denied group check consumes nothing),
+ * so a task whose group is at its limit is **skipped** rather than blocking other groups, and the
+ * shared global bucket isn't spent on it. `group`/`groupLimit` are read at admission time.
  */
-export function rateLimitedDoer(opts: RateLimitedDoerOptions): Doer {
-  const lim = limiter(opts);
+export function rateLimitedDoer(opts: RateLimitedDoerOptions): RateLimitedDoer {
+  const store = opts.store ?? memoryStore();
+  const lim = limiter({ ...opts, store }); // global gate — shares `store` so groups can reuse it
   const inner = opts.doer ?? unlimitedDoer();
   const now = opts.now ?? Date.now;
   const floor = opts.retryFloor ?? DOER_RETRY_FLOOR;
   const keyOf = (o: DoerTaskOptions | undefined): string => (typeof opts.key === 'function' ? opts.key(o ?? {}) : (opts.key ?? 'doer'));
+
+  /* ---- group gate (optional): a second per-`group` limit on top of the global one ---- */
+  const groupStore = opts.groupStore ?? store;
+  const groupPrefix = (opts.prefix ?? DEFAULT_PREFIX) + 'grp:'; // namespaced apart from global keys
+  const groupKeyOf = (o: RateTaskOptions | undefined): string | undefined => (opts.groupKey ? opts.groupKey(o ?? {}) : o?.group);
+  const groupRuleFor = (o: RateTaskOptions | undefined): RateLimitRule | undefined => {
+    const limit = o?.groupLimit ?? opts.groupLimit;
+    if (limit === undefined) {return undefined;} // no group limit → global gate only
+    return {
+      limit,
+      window: o?.groupWindow ?? opts.window,
+      algorithm: o?.groupAlgorithm ?? opts.algorithm ?? DEFAULT_ALGORITHM,
+      countRejected: false, // a denied group check must NOT consume — the skip depends on it
+    };
+  };
+  const report = (err: unknown): void => {
+    try {
+      opts.onError?.(err);
+    } catch {
+      /* error reporting must never crash the drain loop */
+    }
+  };
 
   const pending: DoerPending[] = [];
   const idle: (() => void)[] = [];
   let seq = 0;
   let draining = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+
+  /* ---- sustained-backlog watch (optional): fire while tasks stay queued on the rate limit ---- */
+  const backlogWatch = opts.onBacklog !== undefined && opts.backlogAfterMs !== undefined;
+  let nonEmptySince: number | null = null;
+  let backlogTimer: ReturnType<typeof setTimeout> | null = null;
+  const armBacklog = (ms: number): void => {
+    backlogTimer = setTimeout(fireBacklog, ms)
+    ;(backlogTimer as { unref?: () => void }).unref?.();
+  };
+  function fireBacklog(): void {
+    try {
+      opts.onBacklog!({ pending: pending.length, nonEmptyForMs: now() - nonEmptySince! });
+    } catch {
+      /* an observer must never disrupt the doer */
+    }
+    if (opts.backlogEveryMs !== undefined) {armBacklog(opts.backlogEveryMs);} // keep notifying while backed up
+    else {backlogTimer = null;} // fire-once per episode
+  }
+  const syncBacklog = (): void => {
+    if (!backlogWatch) {return;}
+    if (pending.length > 0) {
+      if (nonEmptySince === null) {
+        nonEmptySince = now();
+        armBacklog(opts.backlogAfterMs!);
+      }
+    } else {
+      // queue drained — `do()` always calls this with a task queued, so an empty queue means
+      // the backlog cleared; reset (idempotent) and cancel any pending alarm.
+      nonEmptySince = null;
+      if (backlogTimer) {
+        clearTimeout(backlogTimer);
+        backlogTimer = null;
+      }
+    }
+  };
 
   const arm = (ms: number): void => {
     if (timer) {return;}
@@ -315,42 +434,71 @@ export function rateLimitedDoer(opts: RateLimitedDoerOptions): Doer {
     }, Math.max(floor, ms))
     ;(timer as { unref?: () => void }).unref?.();
   };
+  /**
+   * The oldest pending task not skipped this round (a fresh scan, so tasks queued mid-drain are
+   * seen). `pending` is in insertion (seq) order, so equal `createdAt` ties keep the earliest.
+   */
+  const nextPending = (skipped: ReadonlySet<DoerPending>): DoerPending | undefined => {
+    let best: DoerPending | undefined;
+    for (const t of pending) {
+      if (skipped.has(t)) {continue;}
+      if (!best || t.createdAt < best.createdAt) {best = t;}
+    }
+    return best;
+  };
   const drain = async (): Promise<void> => {
     if (draining) {return;}
     draining = true;
     try {
-      while (pending.length > 0) {
+      // Oldest-first, but SKIP tasks whose group is at its limit so a hot group can't block others;
+      // stop when the shared global bucket is exhausted (nothing more can be admitted this round).
+      const skipped = new Set<DoerPending>();
+      let soonest = Infinity;
+      for (;;) {
         if (inner.available() <= 0) {
-          arm(floor); // inner doer saturated — re-check soon
+          soonest = Math.min(soonest, floor); // inner doer saturated — re-check soon
           break;
         }
-        let best = 0;
-        for (let i = 1; i < pending.length; i++) {
-          const a = pending[i]!;
-          const b = pending[best]!;
-          if (a.createdAt < b.createdAt || (a.createdAt === b.createdAt && a.seq < b.seq)) {best = i;}
+        const task = nextPending(skipped);
+        if (!task) {break;} // everything left is capped on its group (all skipped) — nothing to admit
+        const o = task.opts;
+        // group gate first — a denied check consumes nothing, so skipping wastes no global token
+        const groupRule = groupRuleFor(o);
+        const gk = groupKeyOf(o);
+        if (groupRule && gk !== undefined) {
+          let gr;
+          try {
+            gr = await groupStore.consume(groupPrefix + gk, groupRule, now());
+          } catch (err) {
+            report(err);
+            soonest = Math.min(soonest, floor); // group-store hiccup — back off the whole round
+            break;
+          }
+          if (!gr.allowed) {
+            soonest = Math.min(soonest, gr.retryAfter); // this group is capped → try other groups
+            skipped.add(task);
+            continue;
+          }
         }
-        const task = pending[best]!;
+        // global gate (shared) — if it's out, no further task can be admitted this round
         let res;
         try {
-          res = await lim.check(keyOf(task.opts), now());
+          res = await lim.check(keyOf(o), now());
         } catch (err) {
-          try {
-            opts.onError?.(err);
-          } catch {
-            /* error reporting must never crash the drain loop */
-          }
-          arm(floor); // a store hiccup must not strand pending tasks — retry admission shortly
+          report(err);
+          soonest = Math.min(soonest, floor);
           break;
         }
         if (!res.allowed) {
-          arm(res.retryAfter); // wait until the limiter would allow again
+          soonest = Math.min(soonest, res.retryAfter);
           break;
         }
-        pending.splice(best, 1);
-        inner.do(task.run, task.opts); // admitted → hand off to the inner doer
+        pending.splice(pending.indexOf(task), 1);
+        inner.do(task.run, task.opts); // both gates passed → hand off to the inner doer
       }
       if (pending.length === 0) {for (const r of idle.splice(0)) {r();}}
+      else {arm(soonest);} // pending remains → re-check when the soonest gate would allow again (soonest is finite here)
+      syncBacklog(); // pending shrank (admitted) or held (rate-limited) — update the backlog clock
     } finally {
       draining = false;
     }
@@ -360,6 +508,7 @@ export function rateLimitedDoer(opts: RateLimitedDoerOptions): Doer {
     available: () => Math.min(Math.max(0, lim.rule.limit - pending.length), inner.available()),
     do(task, o) {
       pending.push({ run: task, opts: o, createdAt: o?.createdAt ?? now(), seq: seq++ });
+      syncBacklog(); // a new task queued — start the backlog clock if this is the first
       void drain();
     },
     done: () => (pending.length === 0 ? inner.done() : new Promise<void>((r) => idle.push(() => void inner.done().then(r)))),
@@ -431,20 +580,43 @@ function tokenBucket(buckets: Map<string, Bucket>, key: string, rule: RateLimitR
   return { allowed, limit: cap, remaining, reset, retryAfter };
 }
 
+/** Options for {@link memoryStore}. */
+export interface MemoryStoreOptions {
+  /**
+   * Sweep expired/idle entries once every this many `consume` calls (default 1000). Lower bounds
+   * memory tighter when keys churn — e.g. many short-lived rate-limit **groups** (per-user/per-model)
+   * that aren't known up front — at a little more periodic scan cost.
+   */
+  readonly sweepEvery?: number;
+  /**
+   * Drop an idle **token-bucket** key after this long with no activity (ms, default 10 min).
+   * Windowed (`fixed-window`/`sliding-window`) counters are always dropped once their window has
+   * elapsed, regardless of this.
+   */
+  readonly idleMs?: number;
+}
+
 /**
- * An in-process {@link RateLimitStore} implementing all three algorithms. The
- * default store — fine for a single instance; use a distributed store (e.g.
- * `@ayepi/rate/redis`) to share limits across pods. Expired entries are swept
- * lazily.
+ * An in-process {@link RateLimitStore} implementing all three algorithms. The default store — fine
+ * for a single instance; use a distributed store (e.g. `@ayepi/rate/redis`, which sets key TTLs) to
+ * share limits across pods.
+ *
+ * **Bounded memory for dynamic keys.** Entries are swept lazily so an unbounded, not-known-in-advance
+ * key space (per-user/per-model rate-limit **groups**) doesn't grow without bound: a windowed counter
+ * is dropped once its window elapses, and an idle token-bucket after {@link MemoryStoreOptions.idleMs}.
+ * Active keys live long enough to enforce the limit; idle ones go away. Tune {@link MemoryStoreOptions}
+ * for high churn.
  */
-export function memoryStore(): RateLimitStore {
+export function memoryStore(opts: MemoryStoreOptions = {}): RateLimitStore {
+  const sweepEvery = opts.sweepEvery ?? SWEEP_EVERY;
+  const idleMs = opts.idleMs ?? BUCKET_IDLE_MS;
   const counters = new Map<string, Counter>();
   const buckets = new Map<string, Bucket>();
   let ops = 0;
   const sweep = (now: number) => {
-    if (++ops % SWEEP_EVERY !== 0) {return;}
+    if (++ops % sweepEvery !== 0) {return;}
     for (const [k, e] of counters) {if (e.reset <= now) {counters.delete(k);}}
-    for (const [k, b] of buckets) {if (now - b.ts > BUCKET_IDLE_MS) {buckets.delete(k);}}
+    for (const [k, b] of buckets) {if (now - b.ts > idleMs) {buckets.delete(k);}}
   };
   return {
     consume(key, rule, now) {
