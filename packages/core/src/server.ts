@@ -39,6 +39,15 @@ import { createLoadShedder } from './shed';
 /* ---- internal constants ---- */
 /** Readable-side highWaterMark for the `$out` transform: accept the first chunk before a reader attaches so headers can commit. */
 const OUT_HIGH_WATER_MARK = 1;
+/**
+ * Default read-ahead budget, in **bytes**, for a raw `streamOut` handler that *returns* an async
+ * iterable. The source is pulled only while fewer than this many bytes sit queued, so a producer
+ * cannot outrun a slow socket: peak resident bytes are the queue plus the one chunk in flight,
+ * regardless of how many rows the generator would happily produce. 64 KiB keeps a fast client
+ * saturated (it is well over a typical TCP send window) while bounding a stalled one.
+ * Override per server with {@link ServerOptions.streamHighWaterMark}.
+ */
+const STREAM_HIGH_WATER_MARK = 65536;
 /** Synthetic status for an aborted/cancelled call (no HTTP response is produced). */
 const ABORTED_STATUS = 0;
 
@@ -183,6 +192,15 @@ export interface ServerOptions {
    * ahead of routing and middleware; `OPTIONS` preflight is always exempt. See {@link LoadShedOptions}.
    */
   readonly shed?: LoadShedOptions;
+  /**
+   * Read-ahead budget, in **bytes**, for a raw `streamOut` handler that returns an async iterable
+   * (default 64 KiB). The iterable is pulled only while fewer than this many bytes are queued, so
+   * peak resident memory per response is this budget plus one chunk however fast the producer is.
+   * Raise it to keep a high-latency link busy; lower it (`0` pulls strictly on demand) to hold less
+   * per concurrent download. A handler that returns its own `ReadableStream`, or pipes into `out`,
+   * carries its own backpressure and ignores this.
+   */
+  readonly streamHighWaterMark?: number;
 }
 
 /** The assembled server: a fetch handler, a ws handler, the manifest, `emit`, and doc generators. */
@@ -739,16 +757,34 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
     return invoke(e, req, p, q, b, null, undefined, undefined, makeMeta(), opts?.signal, { transport: 'local' });
   }
 
+  /**
+   * A handler's returned bytes as a response body. A `ReadableStream` is its own body and passes
+   * through; an async iterable is adapted **pull-first** — the iterator advances only when the
+   * queue drops below the byte high-water mark, so the generator runs at the socket's pace and a
+   * handler that holds one page at a time stays constant-memory end to end. Cancelling the body
+   * (client disconnect, 416, range slice) calls the iterator's `return()`, so a generator's
+   * `finally` runs exactly once; a throw mid-iteration errors the body, truncating an
+   * already-committed response rather than completing it silently.
+   */
   function toStream(v: unknown): ReadableStream<Uint8Array> {
     if (v instanceof ReadableStream) {return v;}
     const iter = v as AsyncIterable<string | Uint8Array>; // internal cast: HandlerReturn guarantees the union
+    const it = iter[Symbol.asyncIterator]();
     const enc = new TextEncoder();
-    return new ReadableStream<Uint8Array>({
-      async start(controller) {
-        for await (const chunk of iter) {controller.enqueue(typeof chunk === 'string' ? enc.encode(chunk) : chunk);}
-        controller.close();
+    return new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          const { done, value } = await it.next();
+          if (done) {return controller.close();}
+          controller.enqueue(typeof value === 'string' ? enc.encode(value) : value);
+        },
+        /* the stream spec never invokes cancel after close/error, so this is the only return() call */
+        async cancel() {
+          await it.return?.(undefined);
+        },
       },
-    });
+      new ByteLengthQueuingStrategy({ highWaterMark: options?.streamHighWaterMark ?? STREAM_HIGH_WATER_MARK }),
+    );
   }
 
   /** push-based async iterable: ws chunk frames feed it, handlers for-await it */

@@ -82,7 +82,10 @@ spec({ endpoints, events, doc? })              // validate + brand the declarati
   handlers/bindings across multiple builders if you like.
 - **`server(spec, [builders], opts?)`** assembles the runtime from the builders produced by
   `implement()`. A **missing handler is a compile error naming the endpoint**; duplicate/unknown
-  handlers throw at startup; and **any middleware def left unbound throws at assembly**.
+  handlers throw at startup; and **any middleware def left unbound throws at assembly**. `opts`
+  is `ServerOptions`: `cors`, `docs`, `broker`, `shed` (below), and `streamHighWaterMark` (the
+  read-ahead byte budget for a raw `streamOut` handler that returns an async iterable — see
+  `ayepi-core-endpoints.md`).
 - **`client<typeof spec>({...})`** creates the typed SDK. It needs a `Manifest` (or the
   spec) and a `baseUrl`; the spec type parameter is **type-only** (erased at build).
 

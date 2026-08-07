@@ -221,6 +221,27 @@ enrich: endpoint({ streamIn: z.object({ v: z.number() }), streamOut: z.object({ 
 - `streamEncoding` (`'ndjson'` default, or `'sse'`) only applies to a **typed (schema)**
   `streamOut` (enforced at `spec()` time). `download` requires a **raw (string)** `streamOut`.
 
+#### Backpressure on a raw `streamOut`
+
+Whichever way a handler produces bytes, the producer runs at the **socket's** pace — a slow
+client slows the handler down instead of filling a buffer, so a constant-memory handler (one
+page in hand at a time) stays constant-memory on the wire:
+
+- **Returning an async iterable** — the iterator is advanced only while fewer than
+  `ServerOptions.streamHighWaterMark` bytes (default 64 KiB) sit queued. Peak resident bytes
+  per response are that budget plus the chunk in flight, whatever the generator would produce
+  if left alone. Set `0` to pull strictly on demand, or raise it to keep a high-latency link
+  busy.
+- **Piping into `out`** — `await writer.write(chunk)` (or `readable.pipeTo(out)`) resolves
+  only when the response stream has room.
+- **Returning your own `ReadableStream`** — it *is* the body; its `pull` is called on demand.
+
+When the client disconnects (or a Range slice has what it needs), the body is cancelled: a
+returned iterable's `return()` is called, so a generator's `finally` runs — exactly once, and
+never after it has finished on its own. An iterable that throws mid-stream errors the body;
+since the headers committed with the first byte, that surfaces to the client as a **truncated
+response**, not a clean one.
+
 ### `download`
 
 For raw `streamOut`, sets a static `Content-Disposition: attachment; filename="…"`. The
