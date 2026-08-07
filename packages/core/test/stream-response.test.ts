@@ -1,7 +1,8 @@
 /**
  * Raw `streamOut` response construction: the demand-driven adaptation of a returned async
  * iterable (backpressure budget, cancellation, mid-stream failure), which headers the library
- * fills in versus which the handler owns, and when `Accept-Ranges` may claim `bytes`.
+ * fills in versus which the handler owns, when `Accept-Ranges` may claim `bytes`, and the
+ * RFC 6266 encoding of a `Content-Disposition` filename.
  */
 import { describe, it, expect } from 'vitest';
 import { spec, endpoint, implement, server, type ServerOptions } from '../src/index';
@@ -284,3 +285,54 @@ describe("the handler's own headers survive the library defaults", () => {
   });
 });
 
+describe('Content-Disposition encodes an untrusted filename', () => {
+  const dispositionFor = async (filename: string) => {
+    const app = mk(({ download }) => {
+      download(filename);
+      return (async function* () {
+        yield 'x';
+      })();
+    });
+    const res = await app.fetch(new Request('http://t/s'));
+    return res;
+  };
+
+  it('escapes a quote instead of letting it close the quoted-string', async () => {
+    // a name crafted to append a filename* parameter, which recipients prefer over filename
+    const res = await dispositionFor('a".txt"; filename*=UTF-8\'\'evil.exe');
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="a\\".txt\\"; filename*=UTF-8\'\'evil.exe"');
+  });
+
+  it('escapes a backslash', async () => {
+    const res = await dispositionFor('a\\b.txt');
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="a\\\\b.txt"');
+  });
+
+  it('carries non-ASCII in filename* with an ASCII fallback', async () => {
+    const res = await dispositionFor('réport 2024.csv');
+    expect(res.headers.get('content-disposition')).toBe("attachment; filename=\"r_port 2024.csv\"; filename*=UTF-8''r%C3%A9port%202024.csv");
+  });
+
+  it("percent-encodes '()* too, which are not RFC 5987 attr-chars", async () => {
+    const res = await dispositionFor("naïve's(1)*.csv");
+    expect(res.headers.get('content-disposition')).toBe("attachment; filename=\"na_ve's(1)*.csv\"; filename*=UTF-8''na%C3%AFve%27s%281%29%2A.csv");
+  });
+
+  it('neutralizes CR/LF into a valid header instead of a 500', async () => {
+    const res = await dispositionFor('a\r\nb.txt');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-disposition')).toBe("attachment; filename=\"a__b.txt\"; filename*=UTF-8''a%0D%0Ab.txt");
+  });
+
+  it('matches the worked example in ayepi-core-endpoints.md', async () => {
+    const res = await dispositionFor('réport "24".csv');
+    expect(res.headers.get('content-disposition')).toBe(
+      "attachment; filename=\"r_port \\\"24\\\".csv\"; filename*=UTF-8''r%C3%A9port%20%2224%22.csv",
+    );
+  });
+
+  it('leaves a plain filename alone', async () => {
+    const res = await dispositionFor('report.zip');
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="report.zip"');
+  });
+});

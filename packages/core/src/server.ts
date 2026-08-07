@@ -943,6 +943,29 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
     });
   }
 
+  /**
+   * An RFC 6266 `Content-Disposition` for a filename that may be entirely attacker-supplied
+   * (callers routinely pass through a user- or catalog-supplied name).
+   *
+   * The `filename` parameter is a quoted-string, so a raw `"` in the name would close it early and
+   * let the rest inject further parameters (`filename*=…` wins over `filename`, so that is a
+   * silent rename of the saved file). Every `"`/`\` is therefore backslash-escaped, and any
+   * non-printable-ASCII code unit is replaced with `_` in the fallback — that keeps the ASCII
+   * parameter both safe and legal for a recipient that ignores RFC 5987.
+   *
+   * When the name is not pure printable ASCII the real bytes still have to survive, so a
+   * `filename*=UTF-8''…` parameter carries the percent-encoded original; recipients prefer it.
+   * `encodeURIComponent` leaves `'()*` unescaped, which are not RFC 5987 `attr-char`s, so they are
+   * encoded too (over-encoding is always valid).
+   */
+  function contentDisposition(filename: string): string {
+    const ascii = filename.replace(/[^\x20-\x7e]/g, '_');
+    const quoted = `attachment; filename="${ascii.replace(/["\\]/g, (c) => `\\${c}`)}"`;
+    if (ascii === filename) {return quoted;}
+    const encoded = encodeURIComponent(filename).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+    return `${quoted}; filename*=UTF-8''${encoded}`;
+  }
+
   function parseRange(header: string | null): { start: number; end: number | null } | null {
     const m = header ? /^bytes=(\d+)-(\d*)$/.exec(header) : null;
     if (!m) {return null;}
@@ -1046,7 +1069,7 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
              declared $length. Advertising `bytes` without one makes a download manager open N
              parallel ranged requests that each get a full 200 — N complete re-runs of the work. */
           fallbackHeader('accept-ranges', e.method === 'GET' && meta.length !== null ? 'bytes' : 'none');
-          if (dl.filename) {fallbackHeader('content-disposition', `attachment; filename="${dl.filename}"`);}
+          if (dl.filename) {fallbackHeader('content-disposition', contentDisposition(dl.filename));}
           let body: ReadableStream<Uint8Array>;
           if (winner.kind === 'done' && winner.result != null) {
             body = toStream(winner.result);

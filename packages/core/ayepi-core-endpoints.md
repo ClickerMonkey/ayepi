@@ -247,6 +247,18 @@ response**, not a clean one.
 For raw `streamOut`, sets a static `Content-Disposition: attachment; filename="…"`. The
 filename can also be set dynamically per request via the handler's `download(name)`.
 
+The filename is encoded per RFC 6266, so it is safe to pass one through from user or catalog
+data: `"` and `\` are backslash-escaped inside the quoted-string (a bare `"` would otherwise
+close it and let the rest of the name inject further parameters), and anything outside
+printable ASCII — including CR/LF — becomes `_` in that parameter. A name that is not pure
+printable ASCII additionally gets an RFC 5987 `filename*=UTF-8''…` parameter carrying the real
+bytes, which recipients prefer:
+
+```
+download('réport "24".csv')
+→ content-disposition: attachment; filename="r_port \"24\".csv"; filename*=UTF-8''r%C3%A9port%20%2224%22.csv
+```
+
 ### Response headers on a raw `streamOut`
 
 The library fills in `content-type` (from `streamOut`/`download()`), `content-disposition`
