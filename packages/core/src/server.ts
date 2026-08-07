@@ -1036,9 +1036,17 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
           dl.committed = true;
           meta.committed = true;
           const headers = new Headers(meta.headers);
-          headers.set('content-type', dl.ct);
-          headers.set('accept-ranges', 'bytes');
-          if (dl.filename) {headers.set('content-disposition', `attachment; filename="${dl.filename}"`);}
+          /* the handler is closer to the resource than the endpoint declaration, so its own
+             header() wins; these only fill in what it left unsaid */
+          const fallbackHeader = (name: string, value: string) => {
+            if (!headers.has(name)) {headers.set(name, value);}
+          };
+          fallbackHeader('content-type', dl.ct);
+          /* only claim ranges we can actually serve: the range branch below needs a GET and a
+             declared $length. Advertising `bytes` without one makes a download manager open N
+             parallel ranged requests that each get a full 200 — N complete re-runs of the work. */
+          fallbackHeader('accept-ranges', e.method === 'GET' && meta.length !== null ? 'bytes' : 'none');
+          if (dl.filename) {fallbackHeader('content-disposition', `attachment; filename="${dl.filename}"`);}
           let body: ReadableStream<Uint8Array>;
           if (winner.kind === 'done' && winner.result != null) {
             body = toStream(winner.result);

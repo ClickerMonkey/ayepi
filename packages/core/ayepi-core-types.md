@@ -155,7 +155,7 @@ config:
 - `data` — present unless there's no data at all;
 - `stream` — `ReadableStream<Uint8Array>` (raw `streamIn`) or typed `AsyncIterable` (item `streamIn`);
 - `out` / `download()` / `length()` — only on **raw `streamOut`** endpoints (pipe target,
-  dynamic filename, declared byte length for Range/Content-Length/HEAD);
+  dynamic filename, declared byte length for Range/`Content-Length`/`Accept-Ranges`/HEAD);
 - `headers` / `cookies` — only when declared (the parsed `z.output`);
 - `fail` — only when `errors` are declared (`FailFn`).
 

@@ -873,6 +873,7 @@ async function main() {
   const zres = await app.fetch(new Request(zipUrl));
   ok('zip dynamic download filename', zres.headers.get('content-disposition') === 'attachment; filename="report.zip"');
   ok('zip content-type', zres.headers.get('content-type') === 'application/zip');
+  ok('no length() → accept-ranges: none', zres.headers.get('accept-ranges') === 'none');
   const zbytes = new Uint8Array(await zres.arrayBuffer());
   const eocd = [0x50, 0x4b, 0x05, 0x06].every((b, i) => zbytes[zbytes.length - 22 + i] === b);
   ok('zip magic + EOCD', zbytes[0] === 0x50 && zbytes[1] === 0x4b && zbytes[2] === 0x03 && eocd);
@@ -885,6 +886,7 @@ async function main() {
   /* Range + Content-Length + HEAD (resumable downloads) */
   const full = await app.fetch(new Request('http://test/downloadLog'));
   ok('length() → content-length', full.headers.get('content-length') === '100' && (await full.text()).length === 100);
+  ok('length() → accept-ranges: bytes', full.headers.get('accept-ranges') === 'bytes');
   const part = await app.fetch(new Request('http://test/downloadLog', { headers: { range: 'bytes=90-' } }));
   ok('Range → 206 + content-range', part.status === 206 && part.headers.get('content-range') === 'bytes 90-99/100' && (await part.text()) === '0123456789');
   const mid = await app.fetch(new Request('http://test/downloadLog', { headers: { range: 'bytes=10-19' } }));

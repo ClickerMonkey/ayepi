@@ -1,6 +1,7 @@
 /**
  * Raw `streamOut` response construction: the demand-driven adaptation of a returned async
- * iterable — its read-ahead budget, cancellation cleanup, and mid-stream failure.
+ * iterable (backpressure budget, cancellation, mid-stream failure), which headers the library
+ * fills in versus which the handler owns, and when `Accept-Ranges` may claim `bytes`.
  */
 import { describe, it, expect } from 'vitest';
 import { spec, endpoint, implement, server, type ServerOptions } from '../src/index';
@@ -191,6 +192,95 @@ describe('a mid-stream failure truncates rather than succeeding silently', () =>
     const res = await app.fetch(new Request('http://t/s'));
     expect(res.status).toBe(200); // headers are long gone; only the body can carry the failure
     await expect(new Response(res.body).text()).rejects.toBeDefined();
+  });
+});
+
+describe('Accept-Ranges only claims what the response can serve', () => {
+  it('is none when the handler declared no length', async () => {
+    const app = mk(() =>
+      (async function* () {
+        yield 'hello';
+      })(),
+    );
+    const res = await app.fetch(new Request('http://t/s'));
+    expect(res.headers.get('accept-ranges')).toBe('none');
+  });
+
+  it('is bytes once the handler declares a length', async () => {
+    const app = mk(async ({ out, length }) => {
+      length(5);
+      const w = out.getWriter();
+      await w.write('hello');
+      await w.close();
+    });
+    const res = await app.fetch(new Request('http://t/s'));
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+    expect(res.headers.get('content-length')).toBe('5');
+  });
+
+  it('is none on a non-GET even with a length, because ranges are only parsed for GET', async () => {
+    const postApi = spec({ endpoints: { p: endpoint({ method: 'POST', streamOut: 'text/plain' }) } });
+    const app = server(postApi, [
+      implement(postApi).handlers({
+        p: async ({ out, length }) => {
+          length(2);
+          const w = out.getWriter();
+          await w.write('hi');
+          await w.close();
+        },
+      }),
+    ]);
+    const res = await app.fetch(new Request('http://t/p', { method: 'POST' }));
+    expect(res.headers.get('accept-ranges')).toBe('none');
+    expect(res.headers.get('content-length')).toBe('2');
+  });
+
+  it('a ranged request against a length-less stream really does get a full 200', async () => {
+    const app = mk(() =>
+      (async function* () {
+        yield 'hello';
+      })(),
+    );
+    const res = await app.fetch(new Request('http://t/s', { headers: { range: 'bytes=0-1' } }));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('hello'); // exactly why `bytes` must not be advertised here
+  });
+});
+
+describe("the handler's own headers survive the library defaults", () => {
+  it('keeps a handler opt-out of range support', async () => {
+    const app = mk(async ({ out, length, header }) => {
+      length(5);
+      header('accept-ranges', 'none');
+      const w = out.getWriter();
+      await w.write('hello');
+      await w.close();
+    });
+    const res = await app.fetch(new Request('http://t/s'));
+    expect(res.headers.get('accept-ranges')).toBe('none');
+  });
+
+  it('keeps a handler content-type over the declared streamOut type', async () => {
+    const app = mk(({ header }) => {
+      header('content-type', 'text/csv; charset=utf-8');
+      return (async function* () {
+        yield 'a,b\n';
+      })();
+    });
+    const res = await app.fetch(new Request('http://t/s'));
+    expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+  });
+
+  it('keeps a handler content-disposition over download()', async () => {
+    const app = mk(({ header, download }) => {
+      download('forced.txt');
+      header('content-disposition', 'inline');
+      return (async function* () {
+        yield 'x';
+      })();
+    });
+    const res = await app.fetch(new Request('http://t/s'));
+    expect(res.headers.get('content-disposition')).toBe('inline');
   });
 });
 

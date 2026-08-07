@@ -247,6 +247,18 @@ response**, not a clean one.
 For raw `streamOut`, sets a static `Content-Disposition: attachment; filename="…"`. The
 filename can also be set dynamically per request via the handler's `download(name)`.
 
+### Response headers on a raw `streamOut`
+
+The library fills in `content-type` (from `streamOut`/`download()`), `content-disposition`
+(from `download`) and `accept-ranges` — but only where the handler has not set that header
+itself with `header()`. The handler is closer to the resource, so its value wins.
+
+`accept-ranges` is `bytes` only when the response can actually serve a range: a `GET` whose
+handler called `length()`. Otherwise it is `none`. That matters because a download manager
+that sees `bytes` opens several ranged requests in parallel, and a stream with no declared
+length answers each of them with a **full 200** — for a generated export, one complete
+re-run of the work per connection.
+
 ### `response`, `responses`, `errors`
 
 - **`response`** — a single success schema. The handler returns the value; the client
