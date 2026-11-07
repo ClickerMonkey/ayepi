@@ -90,8 +90,8 @@ importers:
         specifier: ^3.5.13
         version: 3.5.38(typescript@5.9.3)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
     devDependencies:
       esbuild:
         specifier: ^0.24.2
@@ -124,8 +124,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/aws:
     devDependencies:
@@ -169,8 +169,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/bun:
     devDependencies:
@@ -190,8 +190,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/cache:
     devDependencies:
@@ -211,8 +211,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/codec:
     devDependencies:
@@ -238,8 +238,8 @@ importers:
   packages/core:
     dependencies:
       zod:
-        specifier: ^4
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
     devDependencies:
       '@arethetypeswrong/cli':
         specifier: ^0.17.0
@@ -278,8 +278,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/env:
     devDependencies:
@@ -296,8 +296,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/files:
     devDependencies:
@@ -317,8 +317,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/log:
     devDependencies:
@@ -338,8 +338,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/mcp:
     devDependencies:
@@ -359,8 +359,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/mock:
     devDependencies:
@@ -380,8 +380,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/node:
     dependencies:
@@ -411,8 +411,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/otel:
     devDependencies:
@@ -435,8 +435,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/plugin:
     devDependencies:
@@ -456,8 +456,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/rate:
     devDependencies:
@@ -483,8 +483,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/redis:
     devDependencies:
@@ -516,8 +516,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/stress:
     devDependencies:
@@ -537,8 +537,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/updown:
     devDependencies:
@@ -2195,6 +2195,7 @@ packages:
   eslint@9.39.4:
     resolution: {integrity: sha512-XoMjdBOwe/esVgEvLmNsD3IRHkm7fbKIUGvrleloJXUZgDHig2IPWNniv+GwjyJXzuNqVjlr5+4yVUZjycJwfQ==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -3126,8 +3127,8 @@ packages:
     resolution: {integrity: sha512-zK7YHHz4ZXpW89AHXUPbQVGKI7uvkd3hzusTdotCg1UxyaVtg0zFJSTfW/Dq5f7OBBVnq6cZIaC8Ti4hb6dtCA==}
     engines: {node: '>= 14'}
 
-  zod@4.4.3:
-    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
 snapshots:
 
@@ -5734,4 +5735,4 @@ snapshots:
       compress-commons: 6.0.2
       readable-stream: 4.7.0
 
-  zod@4.4.3: {}
+  zod@4.6.7: {}
