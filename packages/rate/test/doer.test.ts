@@ -97,7 +97,7 @@ describe('rateLimitedDoer', () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     // rate allows all, but the inner doer caps concurrency at 1
-    const d = rateLimitedDoer({ limit: 100, window: 10_000, doer: priorityDoer({ max: 1 }) });
+    const d = rateLimitedDoer({ limit: 100, window: 10_000, doer: priorityDoer({ max: 1, buffer: 0 }) });
     for (let i = 0; i < 3; i++)
       {d.do(async () => {
         inFlight++;
@@ -109,5 +109,57 @@ describe('rateLimitedDoer', () => {
     expect(peak).toBe(1); // inner doer governs concurrency
     release();
     await d.done();
+  });
+});
+
+describe("rateLimitedDoer order: 'priority'", () => {
+  it('admits the most urgent waiting task first, then the oldest', async () => {
+    let t = 1000;
+    const ran: string[] = [];
+    const d = rateLimitedDoer({ limit: 1, window: 50, now: () => t, retryFloor: 5, order: 'priority' });
+    const task = (name: string) => async (): Promise<void> => void ran.push(name);
+    d.do(task('first')); // admitted at once (budget 1)
+    d.do(task('low-old'), { priority: 0, createdAt: 1 });
+    d.do(task('high-new'), { priority: 5, createdAt: 3 });
+    d.do(task('high-old'), { priority: 5, createdAt: 2 });
+    await tick();
+    expect(ran).toEqual(['first']);
+    for (const expected of ['high-old', 'high-new', 'low-old']) {
+      t += 60;
+      await new Promise((r) => setTimeout(r, 80));
+      expect(ran.at(-1)).toBe(expected);
+    }
+    await d.done();
+  });
+
+  it("defaults to 'oldest', ignoring priority", async () => {
+    let t = 1000;
+    const ran: string[] = [];
+    const d = rateLimitedDoer({ limit: 1, window: 50, now: () => t, retryFloor: 5 });
+    d.do(async () => void ran.push('first'));
+    d.do(async () => void ran.push('old'), { priority: 0, createdAt: 1 });
+    d.do(async () => void ran.push('urgent'), { priority: 9, createdAt: 2 });
+    await tick();
+    t += 60;
+    await new Promise((r) => setTimeout(r, 80));
+    expect(ran).toEqual(['first', 'old']);
+    t += 60;
+    await d.done();
+  });
+
+  it('holds tasks in priority order while a bounded inner doer is full', async () => {
+    const ran: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const d = rateLimitedDoer({ limit: 100, window: 100_000, now: () => 1000, retryFloor: 5, order: 'priority', doer: priorityDoer({ max: 1, buffer: 0 }) });
+    d.do(async () => { ran.push('busy'); await gate; });
+    await tick();
+    d.do(async () => void ran.push('low'), { priority: 0 });
+    d.do(async () => void ran.push('high'), { priority: 3 });
+    await tick();
+    expect(ran).toEqual(['busy']);
+    release();
+    await d.done();
+    expect(ran).toEqual(['busy', 'high', 'low']);
   });
 });

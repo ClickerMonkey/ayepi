@@ -4,13 +4,22 @@
  * tampered/missing tokens, wrong-op tokens, and the path-miss fall-through.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { server, spec } from '@ayepi/core';
 import { fsFiles } from '../src/fs';
 import { mountFiles, createFilesHandler } from '../src/server';
+import { collect, toStream, type FileStore } from '../src/index';
+
+/** A body that arrives in several chunks. */
+const streamOf = (...parts: string[]): ReadableStream<Uint8Array> => new ReadableStream({
+  start(c) {
+    for (const p of parts) {c.enqueue(new TextEncoder().encode(p));}
+    c.close();
+  },
+});
 
 const SECRET = 'test-secret';
 let dir: string;
@@ -118,5 +127,89 @@ describe('createFilesHandler', () => {
     expect(url.startsWith('/_files?')).toBe(true);
     clock.t += 5000; // past expiry on the same injected clock
     expect((await filesFetch(req(url, { method: 'PUT', body: 'x' })))!.status).toBe(403);
+  });
+});
+
+describe('upload limits (maxSize, sha256)', () => {
+  const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+  const leftovers = () => readdirSync(dir, { recursive: true }).map(String);
+
+  it('mountFiles: refuses a body over maxSize (413) and stores nothing', async () => {
+    const a = app();
+    const store = fsFiles({ dir });
+    const { presign } = mountFiles(a, store, { secret: SECRET });
+    const url = await presign.presignUpload('big', { maxSize: 4 });
+    const res = await a.fetch(req(url, { method: 'PUT', body: streamOf('ab', 'cd', 'ef'), duplex: 'half' } as RequestInit));
+    expect(res.status).toBe(413);
+    expect(await res.json()).toMatchObject({ error: { code: 'TOO_LARGE' } });
+    expect(await store.head('big')).toBeUndefined();
+    expect(leftovers().filter((f) => f.endsWith('.tmp'))).toEqual([]);
+    const ok = await a.fetch(req(await presign.presignUpload('fits', { maxSize: 4 }), { method: 'PUT', body: 'abcd' }));
+    expect(await ok.json()).toEqual({ key: 'fits', size: 4 });
+  });
+
+  it('mountFiles: refuses a declared Content-Length over maxSize before reading', async () => {
+    const a = app();
+    const store = fsFiles({ dir });
+    const { presign } = mountFiles(a, store, { secret: SECRET });
+    const url = await presign.presignUpload('big', { maxSize: 2 });
+    const res = await a.fetch(req(url, { method: 'PUT', body: 'abc', headers: { 'content-length': '3' } }));
+    expect(res.status).toBe(413);
+    expect(await store.head('big')).toBeUndefined();
+  });
+
+  it('mountFiles: checks sha256 (any case), refusing a mismatch (422)', async () => {
+    const a = app();
+    const store = fsFiles({ dir });
+    const { presign } = mountFiles(a, store, { secret: SECRET });
+    const good = await a.fetch(req(await presign.presignUpload('h', { sha256: sha('hello').toUpperCase() }), { method: 'PUT', body: 'hello' }));
+    expect(await good.json()).toEqual({ key: 'h', size: 5 });
+    const bad = await a.fetch(req(await presign.presignUpload('x', { sha256: sha('hello') }), { method: 'PUT', body: 'hellp' }));
+    expect(bad.status).toBe(422);
+    expect(await bad.json()).toMatchObject({ error: { code: 'CHECKSUM_MISMATCH' } });
+    expect(await store.head('x')).toBeUndefined();
+  });
+
+  it('mountFiles: a store failure that is not a refusal passes through as a server error', async () => {
+    const a = app();
+    const failing: FileStore = { ...fsFiles({ dir }), put: () => Promise.reject(new Error('disk full')) };
+    const { presign } = mountFiles(a, failing, { secret: SECRET });
+    const res = await a.fetch(req(await presign.presignUpload('k', { maxSize: 9 }), { method: 'PUT', body: 'x' }));
+    expect(res.status).toBe(500);
+  });
+
+  it('createFilesHandler: same limits, answered as JSON', async () => {
+    const { fetch: filesFetch, presign } = createFilesHandler(fsFiles({ dir }), { secret: SECRET });
+    const big = await filesFetch(req(await presign.presignUpload('a', { maxSize: 1 }), { method: 'PUT', body: 'ab' }));
+    expect(big!.status).toBe(413);
+    const declared = await filesFetch(req(await presign.presignUpload('a', { maxSize: 1 }), { method: 'PUT', body: 'ab', headers: { 'content-length': '2' } }));
+    expect(declared!.status).toBe(413);
+    const bad = await filesFetch(req(await presign.presignUpload('b', { sha256: sha('x') }), { method: 'PUT', body: 'y' }));
+    expect(await bad!.json()).toMatchObject({ error: { code: 'CHECKSUM_MISMATCH' } });
+    const good = await filesFetch(req(await presign.presignUpload('c', { maxSize: 1, sha256: sha('z') }), { method: 'PUT', body: 'z' }));
+    expect(await good!.json()).toEqual({ key: 'c', size: 1 });
+  });
+
+  it('createFilesHandler: a store failure that is not a refusal rejects', async () => {
+    const failing: FileStore = { ...fsFiles({ dir }), put: () => Promise.reject(new Error('disk full', { cause: 'io' })) };
+    const { fetch: filesFetch, presign } = createFilesHandler(failing, { secret: SECRET });
+    await expect(filesFetch(req(await presign.presignUpload('k'), { method: 'PUT', body: 'x' }))).rejects.toThrow('disk full');
+  });
+
+  it('finds a refusal a store wrapped as a cause', async () => {
+    const wrapping: FileStore = {
+      ...fsFiles({ dir }),
+      put: async (key, body) => {
+        try {
+          await collect(toStream(body));
+        } catch (err) {
+          throw new Error('put failed', { cause: err });
+        }
+        return { key, size: 0, modifiedAt: 0 };
+      },
+    };
+    const { fetch: filesFetch, presign } = createFilesHandler(wrapping, { secret: SECRET });
+    const res = await filesFetch(req(await presign.presignUpload('k', { maxSize: 1 }), { method: 'PUT', body: 'xy' }));
+    expect(res!.status).toBe(413);
   });
 });

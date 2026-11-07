@@ -336,6 +336,12 @@ export interface RateLimitedDoerOptions extends LimiterOptions {
    * pass a tuned store, e.g. `groupStore: memoryStore({ sweepEvery: 200, idleMs: 30_000 })`.
    */
   readonly groupStore?: RateLimitStore;
+  /**
+   * Which waiting task is admitted next: `'oldest'` (default) by `createdAt`, or `'priority'` — the highest
+   * {@link DoerTaskOptions.priority} first, then the oldest. With `'priority'` an urgent task never waits behind a
+   * backlog of less urgent ones held by the rate limit. Either way a task whose group is at its limit is skipped.
+   */
+  readonly order?: RateDoerOrder;
   /** Floor on the re-check delay for deferred tasks (ms, default 50). */
   readonly retryFloor?: number;
   /** Clock injection (default `Date.now`). */
@@ -361,12 +367,22 @@ export interface RateLimitedDoerOptions extends LimiterOptions {
   readonly onError?: (err: unknown) => void;
 }
 
+/** How {@link rateLimitedDoer} picks the next waiting task to admit; see {@link RateLimitedDoerOptions.order}. */
+export type RateDoerOrder = 'oldest' | 'priority';
+
 interface DoerPending {
   readonly run: () => Promise<void>;
   readonly opts?: RateTaskOptions;
+  readonly priority: number;
   readonly createdAt: number;
   readonly seq: number;
 }
+
+/** Whether `a` is admitted before `b` under `order`; equal ties keep insertion order (the earlier `seq`). */
+const admitsBefore: Readonly<Record<RateDoerOrder, (a: DoerPending, b: DoerPending) => boolean>> = {
+  oldest: (a, b) => a.createdAt < b.createdAt,
+  priority: (a, b) => (a.priority !== b.priority ? a.priority > b.priority : a.createdAt < b.createdAt),
+};
 
 /**
  * A {@link Doer} (see `@ayepi/core/doer`) that caps the **start rate** of tasks using a
@@ -374,7 +390,8 @@ interface DoerPending {
  * algorithm) the {@link rateLimit} middleware uses. When the limiter admits a task it is
  * handed to an **inner doer** (default {@link unlimitedDoer}), so you can compose a rate
  * cap with a concurrency/ordering policy (e.g. `rateLimitedDoer({ …, doer: priorityDoer({ max: 4 }) })`).
- * Excess tasks wait, oldest-first; a distributed store rate-limits **across a fleet**.
+ * Excess tasks wait and are admitted oldest-first, or most urgent first with `order: 'priority'`; a
+ * distributed store rate-limits **across a fleet**.
  *
  * ```ts
  * import { rateLimitedDoer } from '@ayepi/rate'
@@ -396,6 +413,7 @@ export function rateLimitedDoer(opts: RateLimitedDoerOptions): RateLimitedDoer {
   const inner = opts.doer ?? unlimitedDoer();
   const now = opts.now ?? Date.now;
   const floor = opts.retryFloor ?? DOER_RETRY_FLOOR;
+  const before = admitsBefore[opts.order ?? 'oldest'];
   const keyOf = (o: DoerTaskOptions | undefined): string => (typeof opts.key === 'function' ? opts.key(o ?? {}) : (opts.key ?? 'doer'));
 
   /* ---- group gate (optional): a second per-`group` limit on top of the global one ---- */
@@ -470,14 +488,14 @@ export function rateLimitedDoer(opts: RateLimitedDoerOptions): RateLimitedDoer {
     ;(timer as { unref?: () => void }).unref?.();
   };
   /**
-   * The oldest pending task not skipped this round (a fresh scan, so tasks queued mid-drain are
-   * seen). `pending` is in insertion (seq) order, so equal `createdAt` ties keep the earliest.
+   * The first pending task under `order` not skipped this round (a fresh scan, so tasks queued mid-drain are
+   * seen). `pending` is in insertion (seq) order, so equal ties keep the earliest.
    */
   const nextPending = (skipped: ReadonlySet<DoerPending>): DoerPending | undefined => {
     let best: DoerPending | undefined;
     for (const t of pending) {
       if (skipped.has(t)) {continue;}
-      if (!best || t.createdAt < best.createdAt) {best = t;}
+      if (!best || before(t, best)) {best = t;}
     }
     return best;
   };
@@ -485,7 +503,7 @@ export function rateLimitedDoer(opts: RateLimitedDoerOptions): RateLimitedDoer {
     if (draining) {return;}
     draining = true;
     try {
-      // Oldest-first, but SKIP tasks whose group is at its limit so a hot group can't block others;
+      // In `order`, but SKIP tasks whose group is at its limit so a hot group can't block others;
       // stop when the shared global bucket is exhausted (nothing more can be admitted this round).
       const skipped = new Set<DoerPending>();
       let soonest = Infinity;
@@ -542,7 +560,7 @@ export function rateLimitedDoer(opts: RateLimitedDoerOptions): RateLimitedDoer {
   return {
     available: () => Math.min(Math.max(0, lim.rule.limit - pending.length), inner.available()),
     do(task, o) {
-      pending.push({ run: task, opts: o, createdAt: o?.createdAt ?? now(), seq: seq++ });
+      pending.push({ run: task, opts: o, priority: o?.priority ?? 0, createdAt: o?.createdAt ?? now(), seq: seq++ });
       syncBacklog(); // a new task queued — start the backlog clock if this is the first
       void drain();
     },

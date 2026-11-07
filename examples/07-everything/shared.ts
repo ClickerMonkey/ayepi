@@ -16,6 +16,7 @@
  */
 import { z } from 'zod';
 import { spec, use } from '@ayepi/core';
+import { McpTool } from '@ayepi/mcp';
 import { bearerAuth } from '@ayepi/auth';
 import { rateLimit } from '@ayepi/rate';
 import { telemetry } from '@ayepi/otel';
@@ -105,7 +106,7 @@ export const api = spec({
       /** This very spec as Model Context Protocol tools (one per endpoint). */
       tools: {
         method: 'GET',
-        response: z.array(z.object({ name: z.string(), description: z.string(), inputSchema: z.unknown() })),
+        response: z.array(McpTool),
         doc: { summary: 'List this API as MCP agent tools (@ayepi/mcp)', tags: ['mcp'] },
       },
     }),

@@ -38,11 +38,17 @@ const DEFAULT_HEARTBEAT = { interval: 30_000, timeout: 10_000 } as const;
 export interface WsMessageEvent {
   readonly data?: unknown;
 }
-/** The minimal `WebSocket` surface this transport drives. */
+/**
+ * The minimal `WebSocket` surface this transport drives. `addEventListener` is one overload per event, so both the
+ * browser's `WebSocket` and the `ws` package's (whose listener types differ per event) fit it as they are.
+ */
 export interface WebSocketLike {
   send(data: string): void;
   close(code?: number, reason?: string): void;
-  addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: WsMessageEvent) => void): void;
+  addEventListener(type: 'open', listener: (event: WsMessageEvent) => void): void;
+  addEventListener(type: 'message', listener: (event: WsMessageEvent) => void): void;
+  addEventListener(type: 'close', listener: (event: WsMessageEvent) => void): void;
+  addEventListener(type: 'error', listener: (event: WsMessageEvent) => void): void;
 }
 /** A `WebSocket` constructor (the global one, or `ws` in Node). */
 export type WebSocketCtor = new (url: string, protocols?: string | string[]) => WebSocketLike;
@@ -244,10 +250,22 @@ export function wsTransport(url: string | (() => string), opts: WsTransportOptio
       return;
     }
     sock = s;
-    s.addEventListener('open', () => onOpen());
+    let opened = false;
+    // a socket ends once: by its close, or by an error before it opened (Node's built-in WebSocket fires only the
+    // error when a connection attempt fails); whichever comes second is ignored
+    const ended = (): void => {
+      if (sock === s) {onClose();}
+    };
+    s.addEventListener('open', () => {
+      opened = true;
+      onOpen();
+    });
     s.addEventListener('message', (ev) => onMessage(String(ev.data)));
-    s.addEventListener('close', () => onClose());
-    s.addEventListener('error', (ev) => opts.onError?.(ev));
+    s.addEventListener('close', ended);
+    s.addEventListener('error', (ev) => {
+      opts.onError?.(ev);
+      if (!opened) {ended();}
+    });
   }
 
   function send(frame: string): void {

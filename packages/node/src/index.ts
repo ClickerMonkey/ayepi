@@ -32,6 +32,11 @@ import type { AnySpec, Server } from '@ayepi/core';
 /** A minimal structural view of the ayepi server surface this adapter drives. */
 type AnyApp = Server<AnySpec>;
 
+/** Anything that answers web-standard requests: an ayepi app, or any other `fetch` handler (an MCP endpoint, a proxy). */
+export interface FetchHandler {
+  fetch(req: Request): Promise<Response>;
+}
+
 /** Options for {@link serve}. */
 export interface ServeOptions {
   /** TCP port to listen on. */
@@ -49,16 +54,40 @@ export interface ServeOptions {
   readonly onListen?: (info: { port: number; hostname: string }) => void;
 }
 
-/** Options for {@link handleUpgrade}. */
-export interface UpgradeOptions {
-  /** When set, only upgrades on this pathname are accepted. */
-  readonly path?: string;
+/** How the sockets of one ayepi app are handled: {@link upgradeHandler}'s options. */
+export interface SocketOptions {
   /**
    * Send a WebSocket protocol ping on every connection this often (ms), and terminate a connection whose pong has
    * not come back by the next ping. A peer that vanished without closing (a crash, a dropped network) is then
    * closed within two intervals, so `app.ws.close` runs and its calls settle. Off when omitted.
    */
   readonly heartbeat?: number;
+  /**
+   * When to close a socket, in ms since the epoch, read from its upgrade `Request`: typically just before the
+   * credential it opened with expires. The socket is closed with code {@link EXPIRED_CLOSE_CODE}, and a client whose
+   * URL is a function (`wsTransport(() => url)`) reconnects with the credential it holds now. `undefined` keeps the
+   * socket open. Off when omitted.
+   */
+  readonly closeAt?: (req: Request) => number | undefined;
+  /** The clock `closeAt` is measured against (ms since the epoch). Default `Date.now`. */
+  readonly clock?: () => number;
+}
+
+/** Options for {@link handleUpgrade}. */
+export interface UpgradeOptions extends SocketOptions {
+  /** When set, only upgrades on this pathname are accepted. */
+  readonly path?: string;
+}
+
+/** The close code a socket gets when its {@link SocketOptions.closeAt} time comes. */
+export const EXPIRED_CLOSE_CODE = 4001;
+
+/** One ayepi app's WebSocket side: hand it upgrades, and close its {@link WebSocketServer} to stop. */
+export interface UpgradeHandler {
+  /** The sockets this handler accepted (`.clients`), and `.close()` to stop. */
+  readonly sockets: WebSocketServer;
+  /** Accept an HTTP upgrade as a socket of this app. */
+  upgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): void;
 }
 
 /** Build a fetch `Request` from a Node `IncomingMessage`, wiring an abort `signal`. */
@@ -128,8 +157,8 @@ async function sendResponse(res: http.ServerResponse, response: Response): Promi
 }
 
 /**
- * Create a `node:http` request listener for an ayepi app — useful for mounting on
- * an existing server, behind a proxy, or alongside other routes.
+ * Create a `node:http` request listener for an ayepi app, or any other {@link FetchHandler} — useful for mounting
+ * on an existing server, behind a proxy, or alongside other routes.
  *
  * Each request gets an `AbortController` whose signal aborts when the client
  * disconnects before the response finishes; that signal is the `signal` your
@@ -140,7 +169,7 @@ async function sendResponse(res: http.ServerResponse, response: Response): Promi
  * http.createServer(createRequestListener(app)).listen(3000)
  * ```
  */
-export function createRequestListener(app: AnyApp): (req: http.IncomingMessage, res: http.ServerResponse) => void {
+export function createRequestListener(app: FetchHandler): (req: http.IncomingMessage, res: http.ServerResponse) => void {
   return (req, res) => {
     const ac = new AbortController();
     res.on('close', () => {
@@ -175,36 +204,82 @@ export function createRequestListener(app: AnyApp): (req: http.IncomingMessage, 
  * @returns the underlying {@link WebSocketServer} (call `.close()` to stop).
  */
 export function handleUpgrade(app: AnyApp, server: http.Server, options?: string | UpgradeOptions): WebSocketServer {
-  const { path, heartbeat } = typeof options === 'string' ? { path: options, heartbeat: undefined } : (options ?? {});
-  const wss = new WebSocketServer({ noServer: true });
+  const { path, ...socketOptions } = typeof options === 'string' ? { path: options } : (options ?? {});
+  const handler = upgradeHandler(app, socketOptions);
   server.on('upgrade', (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
-    if (path !== undefined) {
-      const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
-      if (pathname !== path) {
-        socket.destroy();
-        return;
-      }
+    if (path !== undefined && pathnameOf(req) !== path) {
+      socket.destroy();
+      return;
     }
-    wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-      const closed = new AbortController();
-      const request = toRequest(req, closed.signal);
-      const conn = app.ws.open((frame) => {
-        if (ws.readyState === ws.OPEN) {ws.send(frame);}
-      }, request);
-      const stopBeat = heartbeat === undefined ? () => {} : beat(ws, heartbeat);
-      const close = () => {
-        stopBeat();
-        closed.abort();
-        app.ws.close(conn);
-      };
-      ws.on('message', (data: unknown) => {
-        void app.ws.message(conn, String(data));
-      });
-      ws.on('close', close);
-      ws.on('error', close);
-    });
+    handler.upgrade(req, socket, head);
   });
-  return wss;
+  return handler.sockets;
+}
+
+/**
+ * One ayepi app's WebSocket side, not yet attached to a server: each upgrade handed to it becomes a {@link WsConn}
+ * via `app.ws.open` (see {@link handleUpgrade}). Use it to serve several apps on one `http.Server`, through
+ * {@link routeUpgrades} or an `upgrade` listener of your own.
+ */
+export function upgradeHandler(app: AnyApp, options: SocketOptions = {}): UpgradeHandler {
+  const { heartbeat, closeAt, clock = Date.now } = options;
+  const sockets = new WebSocketServer({ noServer: true });
+  return {
+    sockets,
+    upgrade(req, socket, head) {
+      sockets.handleUpgrade(req, socket, head, (ws: WebSocket) => {
+        const closed = new AbortController();
+        const request = toRequest(req, closed.signal);
+        const conn = app.ws.open((frame) => {
+          if (ws.readyState === ws.OPEN) {ws.send(frame);}
+        }, request);
+        const stopBeat = heartbeat === undefined ? () => {} : beat(ws, heartbeat);
+        const stopExpiry = closeAt === undefined ? () => {} : expire(ws, closeAt(request), clock);
+        const close = () => {
+          stopBeat();
+          stopExpiry();
+          closed.abort();
+          app.ws.close(conn);
+        };
+        ws.on('message', (data: unknown) => {
+          void app.ws.message(conn, String(data));
+        });
+        ws.on('close', close);
+        ws.on('error', close);
+      });
+    },
+  };
+}
+
+/**
+ * Serve several ayepi apps' sockets on one `http.Server`, each on its own pathname
+ * (`{ '/ws': browser, '/link': systems }`). An upgrade on any other path is refused.
+ */
+export function routeUpgrades(server: http.Server, routes: Readonly<Record<string, UpgradeHandler>>): void {
+  const byPath = new Map(Object.entries(routes));
+  server.on('upgrade', (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
+    const route = byPath.get(pathnameOf(req));
+    if (route === undefined) {
+      socket.destroy();
+      return;
+    }
+    route.upgrade(req, socket, head);
+  });
+}
+
+/** An upgrade request's pathname. */
+function pathnameOf(req: http.IncomingMessage): string {
+  return new URL(req.url ?? '/', 'http://localhost').pathname;
+}
+
+/** Close `ws` at `at` (ms since the epoch, by `clock`); nothing when `at` is undefined. Returns the stop function. */
+function expire(ws: WebSocket, at: number | undefined, clock: () => number): () => void {
+  if (at === undefined) {return () => {};}
+  const timer = setTimeout(() => {
+    ws.close(EXPIRED_CLOSE_CODE, 'expired');
+  }, Math.max(0, at - clock()));
+  timer.unref();
+  return () => clearTimeout(timer);
 }
 
 /** Ping `ws` every `interval` ms and terminate it when a pong is missed. Returns the stop function. */

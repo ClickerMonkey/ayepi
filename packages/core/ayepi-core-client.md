@@ -405,6 +405,12 @@ interface HeartbeatOptions {
 }
 ```
 
+`WebSocketCtor` is `new (url, protocols?) => WebSocketLike`; `WebSocketLike.addEventListener` has one overload per
+event (`open`, `message`, `close`, `error`), so the browser `WebSocket` and the `ws` package's class both fit it
+without a cast. A socket ends once: on its `close`, or on an `error` before it opened (Node's built-in
+`WebSocket` reports a failed connection attempt with an `error` only); either way the transport schedules a
+reconnect. An `error` on an open socket is only reported to `onError`.
+
 `WsTransport` extends `ClientWs` with explicit lifecycle control:
 
 ```ts

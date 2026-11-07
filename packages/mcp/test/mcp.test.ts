@@ -170,10 +170,11 @@ describe('mcpServer.handle', () => {
   });
 
   it('initialize returns the handshake', async () => {
-    const res = (await mcp.handle(rpc('initialize'))) as { result: { protocolVersion: string; capabilities: unknown; serverInfo: unknown } };
+    const res = (await mcp.handle(rpc('initialize', { protocolVersion: '2024-11-05' }))) as { result: { protocolVersion: string; capabilities: unknown; serverInfo: unknown } };
+    // a version this server speaks is the one it settles on; a spec's tools never change, so no listChanged
     expect(res.result).toEqual({
       protocolVersion: '2024-11-05',
-      capabilities: { tools: {} },
+      capabilities: { tools: { listChanged: false } },
       serverInfo: { name: 'test-api', version: '9.9.9' },
     });
   });
@@ -221,20 +222,20 @@ describe('mcpServer.handle', () => {
     expect(res.result.isError).toBe(true);
   });
 
-  it('tools/call unknown tool => isError', async () => {
-    const res = (await mcp.handle(rpc('tools/call', { name: 'nope' }))) as { result: { isError: boolean; content: { text: string }[] } };
-    expect(res.result.isError).toBe(true);
-    expect(res.result.content[0]!.text).toMatch(/unknown tool "nope"/);
+  it('tools/call unknown tool => -32602', async () => {
+    const res = (await mcp.handle(rpc('tools/call', { name: 'nope' }))) as { error: { code: number; message: string } };
+    expect(res.error.code).toBe(-32602);
+    expect(res.error.message).toMatch(/unknown tool "nope"/);
   });
 
-  it('tools/call with non-string tool name => isError (empty name)', async () => {
-    const res = (await mcp.handle(rpc('tools/call', { arguments: {} }))) as { result: { isError: boolean } };
-    expect(res.result.isError).toBe(true);
+  it('tools/call with no tool name => -32602', async () => {
+    const res = (await mcp.handle(rpc('tools/call', { arguments: {} }))) as { error: { code: number } };
+    expect(res.error.code).toBe(-32602);
   });
 
-  it('tools/call with no params at all => isError', async () => {
-    const res = (await mcp.handle(rpc('tools/call'))) as { result: { isError: boolean } };
-    expect(res.result.isError).toBe(true);
+  it('tools/call with no params at all => -32602', async () => {
+    const res = (await mcp.handle(rpc('tools/call'))) as { error: { code: number } };
+    expect(res.error.code).toBe(-32602);
   });
 
   it('unknown method => -32601', async () => {
@@ -303,8 +304,10 @@ describe('mcpServer.handle notifications', () => {
 describe('mcpServer defaults', () => {
   it('uses default serverInfo and baseUrl when none supplied', async () => {
     const mcp = mcpServer(app, api);
-    const res = (await mcp.handle(rpc('initialize'))) as { result: { serverInfo: { name: string } } };
+    const res = (await mcp.handle(rpc('initialize', { protocolVersion: '1999-01-01' }))) as { result: { serverInfo: { name: string }; protocolVersion: string } };
     expect(res.result.serverInfo.name).toBe('ayepi-mcp');
+    // a version this server does not speak gets its newest
+    expect(res.result.protocolVersion).toBe('2025-06-18');
   });
 
   it('threads custom headers and baseUrl into executed calls', async () => {
@@ -352,8 +355,8 @@ describe('serveStdio', () => {
       input: reader([
         '', // blank -> skipped
         '   ', // whitespace -> skipped
-        JSON.stringify(rpc('initialize')),
-        '{ not json', // parse error -> -32600 response
+        JSON.stringify(rpc('initialize', { protocolVersion: '2024-11-05' })),
+        '{ not json', // parse error -> -32700 response
         JSON.stringify({ jsonrpc: '2.0', method: 'initialize' }), // notification -> no output
         JSON.stringify(rpc('tools/call', { name: 'ping' }, 2)),
       ]),
@@ -364,7 +367,7 @@ describe('serveStdio', () => {
     // initialize, parse-error, tools/call ping (notification produced nothing)
     expect(responses).toHaveLength(3);
     expect(responses[0].result.protocolVersion).toBe('2024-11-05');
-    expect(responses[1].error.code).toBe(-32600);
+    expect(responses[1].error.code).toBe(-32700);
     expect(JSON.parse(responses[2].result.content[0].text)).toEqual({ ok: true });
   });
 

@@ -105,7 +105,7 @@ const local = server(systemLink, [implement(systemLink).handlers({
   },
 })])
 
-const ws = wsTransport('ws://hub:4000/link', { WebSocket: WebSocket as unknown as WebSocketCtor })
+const ws = wsTransport('ws://hub:4000/link', { WebSocket })   // the `ws` package's class fits WebSocketCtor as it is
 hub = client<typeof hubLink>({ baseUrl: 'http://hub:4000', manifest: hubLink, ws, serve: local, prefer: 'ws' })
 
 ws.onState((s) => { if (s === 'open') void hub.call('hello', { name: 'fs' }) })   // greet on every (re)connect

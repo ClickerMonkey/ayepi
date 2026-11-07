@@ -534,8 +534,8 @@ createWork({
 ```
 
 It may be async. A throwing `backpressure` is reported via `onError` (`'queue'`) and the loop
-backs off `pollInterval`. Prefer a modest pause (it's re-polled, and it also bounds how long
-`stop()` waits for the loop to exit). `backpressure` gates the durable queue loop only;
+backs off `pollInterval`. Prefer a modest pause (it's re-polled). `stop()` cuts any pause or
+poll wait short, so it never waits out the interval. `backpressure` gates the durable queue loop only;
 `skipQueue` work runs in-process regardless.
 
 The hook receives a `BackpressureContext` — the live `metrics` registry plus the in-flight
@@ -1000,7 +1000,9 @@ algorithms, every tunable constant) lives in
 
 ## Running the engine as a managed component
 
-`createWork` returns `start()` / `stop()` (idempotent). To wire it into graceful
+`createWork` returns `start()` / `stop()` (idempotent). `stop()` wakes the poll loop from its
+idle wait (the loop's timers are unref'd and never keep the process alive), lets it exit, flushes
+partial batches and waits up to `STOP_DRAIN` for in-flight work. To wire it into graceful
 startup/shutdown alongside the rest of your services, register it with `@ayepi/updown`:
 
 ```ts

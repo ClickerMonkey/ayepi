@@ -8,6 +8,7 @@
  * - {@link generate} — one-off fake value from any zod schema.
  * - {@link mockHandlers} — a handler bag for `server(spec, [implement(spec).handlers(bag)])`.
  * - {@link mockServer} — a real ayepi {@link Server} with generated responses.
+ * - {@link mockEvents} — generated, schema-valid event traffic through a server's `emit`.
  *
  * Generation is **deterministic by default**: the PRNG is seeded from
  * `seed + endpoint + JSON(request)`, so identical inputs yield identical output —
@@ -22,6 +23,10 @@
  * @module
  */
 
-export type { MockOptions, MockOverrides, GenContext, Override } from './types';
+export type {
+  MockOptions, MockOverrides, GenContext, Override, EndpointName, EventName, MockHandlersOptions, MockEventsOptions, MockEvents,
+} from './types';
 export { generate } from './generate';
+export type { MockHandlerBag } from './server';
 export { mockServer, mockHandlers } from './server';
+export { mockEvents } from './events';

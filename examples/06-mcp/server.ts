@@ -28,8 +28,7 @@ const handlers = implement(api).handlers({
   add: ({ data }) => ({ sum: data.a + data.b }),
   roll: ({ data }) => ({ value: 1 + Math.floor(Math.random() * data.sides) }),
 
-  // Pure: a spec → tool definitions. `inputSchema` is a JSON Schema object; the response
-  // schema declares it as `z.unknown()`, so the structural `object` type satisfies it.
+  // Pure: a spec → tool definitions, in the `McpTool` shape the response schema declares.
   tools: () => mcpTools(api),
 
   // Execute a tool against this app via the MCP server, returning its text result.

@@ -29,7 +29,8 @@ Builds a record from mixed arguments:
 - object args are **merged** into the record;
 - `Error` args become `error` / `additionalErrors` (serialized with `name`, `message`,
   `stack`, recursive `cause`, own props) — and **any trace context attached to the error
-  is merged in** (so a caught error carries the context from where it was thrown);
+  is merged in** (so a caught error carries the context from where it was thrown); a string
+  `error` field becomes `{ name: 'Error', message }`;
 - emitted only if `level >= ` the configured threshold (`debug < info < warn < error`).
 
 ```ts

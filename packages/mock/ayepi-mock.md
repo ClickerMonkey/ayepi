@@ -40,8 +40,11 @@ const body = await res.json() // schema-valid, deterministic, 10 items
 ## Public API
 
 ```ts
-import { generate, mockServer, mockHandlers } from '@ayepi/mock'
-import type { MockOptions, MockOverrides, GenContext, Override } from '@ayepi/mock'
+import { generate, mockServer, mockHandlers, mockEvents } from '@ayepi/mock'
+import type {
+  MockOptions, MockOverrides, GenContext, Override,
+  MockHandlersOptions, MockHandlerBag, MockEventsOptions, MockEvents, EndpointName, EventName,
+} from '@ayepi/mock'
 ```
 
 ### `generate(schema, opts?, ctx?) => unknown`
@@ -62,18 +65,36 @@ const user = generate(z.object({ id: z.uuid(), name: z.string(), age: z.int().mi
   - `path` — starting path for override lookup (rarely needed).
   - `rng` — supply your own `() => number` to fully control randomness (tests).
 
-### `mockHandlers(spec, opts?) => Record<string, Handler>`
+### `mockHandlers(spec, opts?) => MockHandlerBag<S, Exclude<EndpointName<S>, X>>`
 
-The handler bag for `server(spec, [implement(spec).handlers(bag)])`. One generated handler
-per endpoint. Use this when you want to mix mock handlers with real ones, or add
-middleware/options yourself.
+The handler bag for `server(spec, [implement(spec).handlers(bag)])`: one generated handler
+per endpoint, **typed per endpoint** (`HandlerFor<S, S['endpoints'][K]>`), so it needs no
+cast. `opts` is `MockOptions` plus `except?: readonly X[]` — endpoint names to leave out
+(you implement them for real). The bag's type omits them, so `server()`'s missing-handler
+compile check sees exactly which endpoints the mock covers and which still need a handler.
 
 ```ts
 import { server, implement } from '@ayepi/core'
 const app = server(api, [implement(api).handlers(mockHandlers(api, { seed: 1 }))])
 ```
 
-### `mockServer(spec, opts?) => Server`
+### `mockEvents(app, opts?) => MockEvents<S>`
+
+Generated, schema-valid event traffic through a server's typed `emit` (any `Pick<Server<S>,
+'spec' | 'emit'>`, real or mock). Each emission generates the event's channel params (when it
+has a `params` schema) and its `data`. The n-th emission of an event is seeded from
+`seed + 'event' + name + n`, so a run replays identically. `opts` is `MockOptions` plus
+`only?: readonly EventName<S>[]` — the events `tick`/`start` pick from (default: all).
+
+```ts
+const events = mockEvents(app, { seed: 1, only: ['userChanged'] })
+events.emit('userChanged') // one generated event now (unknown names fail to compile; throw at runtime)
+events.tick()              // the next event from the chosen set, in order
+events.start(1_000)        // tick every second (restarts if already running)
+events.stop()
+```
+
+### `mockServer(spec, opts?) => Server<S>`
 
 The convenience path: builds the handler bag and wires it into
 `server(spec, [implement(spec).handlers(bag)])`, returning a real ayepi `Server`. Routing, **input validation**, **output validation**, and
@@ -217,16 +238,23 @@ word — pin those with a `fields`/`formats` override.
 ## Recipes
 
 **Mix mock and real handlers** — implement the endpoints you have, mock the rest.
-`mockHandlers` returns a plain handler bag, so merge it with your real handlers (real keys
-win) and wrap the merged bag in a single `implement(api).handlers(...)` builder:
+Name the real endpoints in `except`; the typed bag covers the rest, and `server()` checks at
+compile time that the two builders together handle every endpoint exactly once:
 
 ```ts
 import { implement, server } from '@ayepi/core'
 import { mockHandlers } from '@ayepi/mock'
 
-const real = { getUser: ({ data }) => loadUser(data.id) }
-const bag = { ...mockHandlers(api), ...real }     // mocks fill the gaps; real overrides
-const app = server(api, [implement(api).handlers(bag)])
+const real = implement(api).handlers({ getUser: ({ data }) => loadUser(data.id) })
+const mocked = implement(api).handlers(mockHandlers(api, { except: ['getUser'] }))
+const app = server(api, [real, mocked])
+```
+
+**Realtime UI on a mock** — emit generated events on a timer:
+
+```ts
+const app = mockServer(api, { seed: 1 })
+mockEvents(app, { seed: 1 }).start(2_000)
 ```
 
 **Stable demo data** — fix the seed and clock so screenshots never drift:

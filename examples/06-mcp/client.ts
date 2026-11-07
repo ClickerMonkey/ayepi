@@ -7,6 +7,7 @@ import { createApp, ref, onMounted } from 'vue';
 import { client } from '@ayepi/core/client';
 import manifest from './manifest.gen'; // plain zod-free manifest — tree-shaken; no zod
 import type { api } from './shared'; // type-only — erased at build time
+import type { McpTool } from '@ayepi/mcp';
 
 const sdk = client<typeof api>({ baseUrl: location.origin, manifest });
 
@@ -14,11 +15,8 @@ const sdk = client<typeof api>({ baseUrl: location.origin, manifest });
 interface ToolSchema {
   readonly properties?: Record<string, { type?: string; description?: string }>;
 }
-interface Tool {
-  readonly name: string;
-  readonly description: string;
-  readonly inputSchema: unknown;
-}
+/** A tool as `GET /tools` returns it. */
+type Tool = McpTool;
 
 createApp({
   setup() {

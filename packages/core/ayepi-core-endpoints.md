@@ -36,6 +36,23 @@ interface SpecShape {
 }
 ```
 
+### `mergeSpecs()` — one spec from slices
+
+```ts
+function mergeSpecs<const T extends readonly [AnySpec, ...AnySpec[]]>(...specs: T & DisjointSpecs<T>): MergedSpec<T>
+```
+
+Joins slices (each a spec, often one middleware chain's group) into one validated spec holding the very same endpoint
+and event objects. Unlike `{ ...a, ...b }`, two slices using the same endpoint or event name is a compile-time error
+naming the clash, and throws at runtime too (for slices the compiler can't see as literal tuples). Slice `doc`s are
+not carried over: `spec({ ...mergeSpecs(a, b), doc })`.
+
+```ts
+const open = spec({ endpoints: use(tel).group({ signIn }) })
+const admin = spec({ endpoints: use(tel, auth, adminOnly).group({ users }), events: { audit } })
+export const api = mergeSpecs(open, admin) // { endpoints: { signIn, users }, events: { audit } }
+```
+
 ## `EndpointConfig` — the full surface
 
 Every field below is optional. This is the real interface (from `endpoint.ts`):

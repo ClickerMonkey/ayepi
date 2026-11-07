@@ -32,6 +32,35 @@ export function sleep(ms: number): Promise<void> {
   });
 }
 
+/**
+ * A {@link sleep} that can be cut short: `nap(ms)` resolves after `ms` (an unref'd timer) or as soon as `wake()`
+ * is called, whichever comes first. `wake()` with no nap pending does nothing. The engine's poll loop naps on one,
+ * so `stop()` wakes the loop instead of waiting out its poll interval.
+ */
+export class Napper {
+  #wake: (() => void) | null = null;
+
+  /** Resolve after `ms`, or at the next {@link wake}. */
+  nap(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = (): void => {
+        clearTimeout(t);
+        if (this.#wake === done) {this.#wake = null;}
+        resolve();
+      };
+      const t = setTimeout(done, ms)
+      ;(t as { unref?: () => void }).unref?.();
+      this.#wake?.(); // a newer nap supersedes an older one
+      this.#wake = done;
+    });
+  }
+
+  /** End the pending nap now. */
+  wake(): void {
+    this.#wake?.();
+  }
+}
+
 /** Shallow merge of two objects into a new object (`b` wins on collisions). */
 export function merge(a: object | undefined, b: object | undefined): Record<string, unknown> {
   return { ...(a ?? {}), ...(b ?? {}) };

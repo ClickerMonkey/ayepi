@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
 import { z } from 'zod';
 import { spec, endpoint, server, implement } from '@ayepi/core';
 import { mockServer, mockHandlers } from '../src/server';
@@ -35,6 +35,11 @@ const api = spec({
     ping: endpoint({
       method: 'GET',
       path: '/ping',
+    }),
+    health: endpoint({
+      method: 'GET',
+      path: '/health',
+      response: z.object({ ok: z.boolean() }),
     }),
   },
 });
@@ -99,6 +104,14 @@ describe('mockServer', () => {
     expect(res.status).toBe(204);
   });
 
+  it('endpoint with a response but no inputs generates one, the same every time', async () => {
+    const app = mockServer(api, { seed: 1 });
+    const r1 = await (await app.fetch(new Request(url('/health'), { method: 'GET' }))).json();
+    const r2 = await (await app.fetch(new Request(url('/health'), { method: 'GET' }))).json();
+    expect(r1).toEqual({ ok: expect.any(Boolean) });
+    expect(r2).toEqual(r1);
+  });
+
   it('deterministic: same request ⇒ identical body', async () => {
     const a = mockServer(api, { seed: 9 });
     const b = mockServer(api, { seed: 9 });
@@ -118,10 +131,27 @@ describe('mockServer', () => {
 describe('mockHandlers', () => {
   it('produces a bag wireable into server() via implement().handlers()', async () => {
     const bag = mockHandlers(api, { seed: 2 });
-    expect(Object.keys(bag).sort()).toEqual(['createThing', 'getUser', 'listUsers', 'ping', 'streamLogs']);
-    const wire = implement as unknown as (s: typeof api) => { handlers: (h: unknown) => unknown };
-    const app = (server as (s: typeof api, h: unknown[]) => ReturnType<typeof server>)(api, [wire(api).handlers(bag)]);
+    expect(Object.keys(bag).sort()).toEqual(['createThing', 'getUser', 'health', 'listUsers', 'ping', 'streamLogs']);
+    const app = server(api, [implement(api).handlers(bag)]);
     const res = await app.fetch(new Request(url('/users/u1'), { method: 'GET' }));
     expect(res.status).toBe(200);
+  });
+});
+
+describe('mockHandlers — typed bag', () => {
+  it('leaves out the endpoints named in except, and the bag still feeds server()', async () => {
+    const bag = mockHandlers(api, { seed: 1, except: ['ping'] });
+    expect(Object.keys(bag).sort()).toEqual(['createThing', 'getUser', 'health', 'listUsers', 'streamLogs']);
+    // @ts-expect-error — ping is excluded from the bag's type
+    void bag.ping;
+    const real = implement(api).handlers({ ping: () => undefined });
+    const app = server(api, [real, implement(api).handlers(bag)]);
+    const res = await app.fetch(new Request(url('/users/u1'), { method: 'GET' }));
+    expect(res.status).toBe(200);
+  });
+
+  it('types each handler per endpoint', () => {
+    const bag = mockHandlers(api);
+    expectTypeOf(bag.getUser).parameter(0).toHaveProperty('data').toEqualTypeOf<{ id: string }>();
   });
 });

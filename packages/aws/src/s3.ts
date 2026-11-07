@@ -47,7 +47,7 @@ export interface S3FilesOptions extends ResilientOptions {
   /** @internal Upload seam (default: `@aws-sdk/lib-storage` multipart `Upload`) — injectable for tests. */
   readonly upload?: (key: string, body: FileBody, contentType?: string, metadata?: Record<string, string>) => Promise<void>;
   /** @internal Presign seam (default: `@aws-sdk/s3-request-presigner`) — injectable for tests. */
-  readonly presign?: (kind: 'get' | 'put', key: string, expiresIn: number, contentType?: string) => Promise<string>;
+  readonly presign?: (kind: 'get' | 'put', key: string, expiresIn: number, contentType?: string, sha256?: string) => Promise<string>;
 }
 
 /** S3 surfaces a missing key differently per op (`NoSuchKey` on GET, `NotFound` on HEAD). */
@@ -70,8 +70,8 @@ export function s3Files(opts: S3FilesOptions): FileStore & Presigner {
   /* v8 ignore start -- SDK glue: exercised only against real S3 (integration test) */
   const sdkUpload = (key: string, body: FileBody, contentType?: string, metadata?: Record<string, string>): Promise<void> =>
     new Upload({ client, params: { Bucket: bucket, Key: k(key), Body: Readable.fromWeb(toStream(body) as Parameters<typeof Readable.fromWeb>[0]), ContentType: contentType, Metadata: metadata } }).done().then(() => undefined);
-  const sdkPresign = (kind: 'get' | 'put', key: string, expiresIn: number, contentType?: string): Promise<string> =>
-    getSignedUrl(client, kind === 'get' ? new GetObjectCommand({ Bucket: bucket, Key: k(key) }) : new PutObjectCommand({ Bucket: bucket, Key: k(key), ContentType: contentType }), { expiresIn });
+  const sdkPresign = (kind: 'get' | 'put', key: string, expiresIn: number, contentType?: string, sha256?: string): Promise<string> =>
+    getSignedUrl(client, kind === 'get' ? new GetObjectCommand({ Bucket: bucket, Key: k(key) }) : new PutObjectCommand({ Bucket: bucket, Key: k(key), ContentType: contentType, ChecksumSHA256: sha256 === undefined ? undefined : Buffer.from(sha256, 'hex').toString('base64') }), { expiresIn });
   /* v8 ignore stop */
   const upload = opts.upload ?? sdkUpload;
   const presign = opts.presign ?? sdkPresign;
@@ -133,6 +133,10 @@ export function s3Files(opts: S3FilesOptions): FileStore & Presigner {
       }),
 
     presignDownload: (key, o?: PresignDownloadOptions) => presign('get', key, o?.expiresIn ?? DEFAULT_EXPIRES_IN),
-    presignUpload: (key, o?: PresignUploadOptions) => presign('put', key, o?.expiresIn ?? DEFAULT_EXPIRES_IN, o?.contentType),
+    presignUpload: (key, o?: PresignUploadOptions) => {
+      // a presigned PUT signs headers, not a body cap — only a presigned POST policy can bound size
+      if (o?.maxSize !== undefined) {return Promise.reject(new Error('s3Files: a presigned PUT cannot cap the upload size (maxSize)'));}
+      return presign('put', key, o?.expiresIn ?? DEFAULT_EXPIRES_IN, o?.contentType, o?.sha256?.toLowerCase());
+    },
   };
 }

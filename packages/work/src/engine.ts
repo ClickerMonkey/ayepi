@@ -18,7 +18,7 @@ import { backoff, getDefaultRetryOptions, retry, RetryAbort, type RetryOptions }
 import { defaultCodec, type JsonCodec } from './json';
 import { memoryBackend } from './memory';
 import type { Backend, PulledWork, Queue } from './ports';
-import { genId, identityLogWith, merge, sleep } from './internal';
+import { Napper, genId, identityLogWith, merge, sleep } from './internal';
 import { WorkCancelledError, WorkDelayError } from './errors';
 import { DEPENDENCY_TYPE, dependencyHandler, dependency } from './dependency';
 import { startSchedule } from './schedule';
@@ -1188,6 +1188,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   /* ---- worker loop ---- */
   let running = false;
   let loopPromise: Promise<void> | null = null;
+  const napper = new Napper(); // the poll loop's idle waits; stop() wakes it
   const scheduleCancels = new Set<() => void>();
 
   const pollCount = (): number => {
@@ -1258,6 +1259,8 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     }
   };
 
+  /** The loop's wait between polls: none once stopping (a pop in flight when `stop()` ran), else a nap `stop()` can end. */
+  const idle = (ms: number): Promise<void> => (running ? napper.nap(ms) : Promise.resolve());
   const loop = async (): Promise<void> => {
     while (running) {
       try {
@@ -1265,13 +1268,13 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
         // build the stats context lazily — only when a hook is set (a snapshot allocates per tick).
         const pause = (opts.backpressure ? await opts.backpressure({ metrics: stats.metrics, active: activeMap.size }) : 0) ?? 0;
         if (pause > 0) {
-          await sleep(pause);
+          await idle(pause);
           continue;
         }
         const n = pollCount();
         if (n <= 0) {
           syncBacklog(true); // doers saturated — can't take more work
-          await sleep(pollInterval);
+          await idle(pollInterval);
           continue;
         }
         // poll EVERY distinct queue each tick (a fair share apiece) so a flood on one queue can't
@@ -1296,10 +1299,10 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
         if (pulledTotal === 0 && opts.dlq && (await redriveFromDLQ()) > 0) {continue;}
         // keep pulling immediately only while a queue is saturated AND we're actually starting work;
         // back off when a full round started nothing (only over-capacity/not-due work is available).
-        if (accepted === 0 || !anyFull) {await sleep(pollInterval);}
+        if (accepted === 0 || !anyFull) {await idle(pollInterval);}
       } catch (err) {
         report(err, 'queue'); // a poll/queue error never tears down the loop — sleep and retry
-        await sleep(pollInterval);
+        await idle(pollInterval);
       }
     }
   };
@@ -1316,6 +1319,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   };
   const stop = async (): Promise<void> => {
     running = false;
+    napper.wake(); // end the loop's idle wait so it sees `running` and exits now
     unsubscribeCancels?.();
     unsubscribeCancels = null;
     backedUpSince = null;

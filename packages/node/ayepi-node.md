@@ -88,11 +88,16 @@ interface ServeOptions {
 ### `createRequestListener(app)`
 
 Create a `node:http` request listener for an ayepi app — useful for mounting on
-an existing server, behind a proxy, or alongside other (non-ayepi) routes.
+an existing server, behind a proxy, or alongside other (non-ayepi) routes. It needs only the app's
+`fetch`, so any web-standard handler works too (`FetchHandler`), such as an `@ayepi/mcp` `mcpHttp` endpoint.
 
 ```ts
+interface FetchHandler {
+  fetch(req: Request): Promise<Response>
+}
+
 function createRequestListener(
-  app: Server<AnySpec>,
+  app: FetchHandler,
 ): (req: http.IncomingMessage, res: http.ServerResponse) => void
 ```
 
@@ -114,9 +119,14 @@ function handleUpgrade(
   options?: string | UpgradeOptions,   // a string is the path
 ): WebSocketServer
 
-interface UpgradeOptions {
+interface UpgradeOptions extends SocketOptions {
   readonly path?: string;       // accept upgrades on this pathname only
+}
+
+interface SocketOptions {
   readonly heartbeat?: number;  // ping interval (ms); terminate on a missed pong
+  readonly closeAt?: (req: Request) => number | undefined; // when to close (ms since the epoch)
+  readonly clock?: () => number; // what closeAt is measured against; default Date.now
 }
 ```
 
@@ -125,10 +135,30 @@ interface UpgradeOptions {
 - `path` — when set, only upgrades whose pathname equals `path` are accepted;
   others have their socket destroyed.
 - `heartbeat` — see `ServeOptions.heartbeat`.
+- `closeAt` — read from the upgrade `Request` (headers, `?access_token=`), the time to close
+  the socket, typically just before the credential it opened with expires. The socket is
+  closed with code `EXPIRED_CLOSE_CODE` (4001); a client created with a URL function
+  (`wsTransport(() => url)`) reconnects with the credential it holds now. `undefined` keeps it open.
 - The upgrade `Request` handed to `app.ws.open` carries a `signal` that aborts when the
   socket closes.
 - **Returns** the underlying `ws` `WebSocketServer` — call `.close()` to stop
   accepting upgrades.
+
+### `upgradeHandler(app, options?)` and `routeUpgrades(server, routes)`
+
+Several apps' sockets on one `http.Server`, each on its own path:
+
+```ts
+const front = http.createServer(createRequestListener(web))
+const browser = upgradeHandler(web, { heartbeat: 30_000, closeAt: (req) => expiryOf(req) })
+const systems = upgradeHandler(link, { heartbeat: 30_000 })
+routeUpgrades(front, { '/ws': browser, '/link': systems }) // any other path is refused
+```
+
+`upgradeHandler` takes the `SocketOptions` above and returns `{ sockets, upgrade(req, socket, head) }`:
+`sockets` is its `WebSocketServer` (`.clients`, `.close()`), and `upgrade` accepts one HTTP upgrade
+as a socket of that app, so an `upgrade` listener of your own can route by anything.
+`handleUpgrade` is `upgradeHandler` plus a single-path check.
 
 Use `createRequestListener` + `handleUpgrade` together when you need to build the
 `http.Server` yourself (custom TLS, mounting alongside other routes, etc.); use

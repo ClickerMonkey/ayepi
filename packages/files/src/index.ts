@@ -108,6 +108,17 @@ export interface PresignUploadOptions {
   readonly expiresIn?: number;
   /** Pin the `Content-Type` the upload must use. */
   readonly contentType?: string;
+  /**
+   * The most bytes the upload may carry. A larger body is refused (`413 TOO_LARGE`) and nothing is
+   * stored. S3's presigned `PUT` cannot cap a body, so `s3Files` throws when this is set.
+   */
+  readonly maxSize?: number;
+  /**
+   * The SHA-256 the uploaded bytes must hash to, as lowercase hex. A body that hashes otherwise is
+   * refused (`422 CHECKSUM_MISMATCH`) and nothing is stored. `s3Files` signs it as the object's
+   * `x-amz-checksum-sha256`, so S3 checks it.
+   */
+  readonly sha256?: string;
 }
 
 /**

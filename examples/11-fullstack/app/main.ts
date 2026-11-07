@@ -16,6 +16,7 @@ import { client, wsTransport, ApiError } from '@ayepi/core/client';
 import { decodeSnapshot, jobLabel } from '../shared/domain';
 import manifest from './manifest.gen';
 import type { api } from '../shared/spec';
+import type { McpTool } from '@ayepi/mcp';
 
 const sdk = client<typeof api>({
   baseUrl: location.origin,
@@ -45,7 +46,7 @@ createApp({
     const snapNow = ref('');
     const snapCounts = ref<[string, number][]>([]);
     const snapRoles = ref<string[]>([]);
-    const tools = ref<{ name: string; description: string }[]>([]);
+    const tools = ref<McpTool[]>([]);
     const fileKey = ref('hello.txt');
     const fileText = ref('hello from the browser');
     const files = ref<{ key: string; size: number }[]>([]);

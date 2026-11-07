@@ -92,7 +92,7 @@ Cross-cutting conventions, true across the whole library:
 ### Tooling & composition
 | Doc | Open it when you need to… |
 | --- | --- |
-| [`./ayepi-mcp.md`](./ayepi-mcp.md) | expose a spec as schema-validated **[MCP](https://modelcontextprotocol.io) tools** executed against your app. |
+| [`./ayepi-mcp.md`](./ayepi-mcp.md) | expose a spec as schema-validated **[MCP](https://modelcontextprotocol.io) tools** executed against your app; serve any tools, resources and prompts; and call MCP servers with a typed client (Streamable HTTP or stdio). |
 | [`./ayepi-mock.md`](./ayepi-mock.md) | stand up a **mock server** that returns schema-valid fake data (deterministic seeding, auto pagination). |
 | [`./ayepi-codec.md`](./ayepi-codec.md) | round-trip rich values (`Date`/`BigInt`/`Map`/`Set`/`Error`/custom) through JSON. |
 | [`./ayepi-updown.md`](./ayepi-updown.md) | orchestrate **graceful startup/shutdown** with dependencies + liveness/readiness probes. |
@@ -110,7 +110,7 @@ Cross-cutting conventions, true across the whole library:
 - **Run background jobs / a durable queue** → `./ayepi-work.md` (prod backends: `./ayepi-sqlite.md`, `./ayepi-redis.md`, `./ayepi-aws.md`).
 - **Store & serve files** → `./ayepi-files.md` (S3: `./ayepi-aws.md`).
 - **Deploy** → `./ayepi-node.md` / `./ayepi-bun.md` / `./ayepi-deno.md` (Workers/edge: `./ayepi-core.md`).
-- **Expose as MCP tools / mock the API** → `./ayepi-mcp.md` / `./ayepi-mock.md`.
+- **Expose as MCP tools, serve MCP resources/prompts, call an MCP server / mock the API** → `./ayepi-mcp.md` / `./ayepi-mock.md`.
 - **Graceful shutdown / health probes** → `./ayepi-updown.md` (flush logs via `logger.close()`).
 - **Build a modular, hot-pluggable app** → `./ayepi-plugin.md`.
 - **Find the breaking point / load-test / harden under load** → `./ayepi-stress.md`.

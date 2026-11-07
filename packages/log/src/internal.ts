@@ -379,7 +379,25 @@ export function buildRecord(level: Level, args: readonly unknown[], opts: BuildO
   record = merge(record, getContext());
   for (const o of objects) {record = merge(record, o);}
   for (const c of errorContexts) {record = merge(record, c);}
+  if (record.error !== undefined) {record.error = asSerializedError(record.error);}
   return record as LogRecord;
+}
+
+/** Whether `v` already has the {@link SerializedError} shape (a string `name` and `message`). */
+function isSerializedError(v: unknown): v is SerializedError {
+  if (v === null || typeof v !== 'object') {return false;}
+  const o = v as { name?: unknown; message?: unknown }; // internal read of two optional props
+  return typeof o.name === 'string' && typeof o.message === 'string';
+}
+
+/**
+ * Normalize whatever landed on the reserved `error` key (an `Error` arg, or a field such as
+ * `{ error: 'timed out' }`) to a {@link SerializedError}: a string becomes `{ name: 'Error', message }`,
+ * an already serialized shape is kept, and anything else goes through {@link serializeError}.
+ */
+function asSerializedError(v: unknown): SerializedError {
+  if (typeof v === 'string') {return { name: 'Error', message: v };}
+  return !(v instanceof Error) && isSerializedError(v) ? v : serializeError(v);
 }
 
 /* ---- formatting ---- */

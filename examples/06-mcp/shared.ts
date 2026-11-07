@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { spec, endpoint } from '@ayepi/core';
+import { McpTool } from '@ayepi/mcp';
 
 export const api = spec({
   endpoints: {
@@ -32,7 +33,7 @@ export const api = spec({
     /** GET /tools — the MCP tool definitions for this very spec. */
     tools: endpoint({
       method: 'GET',
-      response: z.array(z.object({ name: z.string(), description: z.string(), inputSchema: z.unknown() })),
+      response: z.array(McpTool),
       doc: { summary: 'List this spec as MCP tools', tags: ['mcp'] },
     }),
 

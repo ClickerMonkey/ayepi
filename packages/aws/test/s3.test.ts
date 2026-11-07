@@ -114,10 +114,12 @@ describe('s3Files', () => {
 
   it('presign delegates to the presign seam', async () => {
     const { client } = mockS3({});
-    const files = s3Files({ client, bucket: 'b', presign: (kind, key, exp, ct) => Promise.resolve(`signed:${kind}:${key}:${exp}:${ct ?? ''}`) });
+    const files = s3Files({ client, bucket: 'b', presign: (kind, key, exp, ct, sha) => Promise.resolve(`signed:${kind}:${key}:${exp}:${ct ?? ''}${sha === undefined ? '' : `:${sha}`}`) });
     expect(await files.presignDownload('d', { expiresIn: 60 })).toBe('signed:get:d:60:');
     expect(await files.presignDownload('d2')).toBe('signed:get:d2:900:'); // default expiry
     expect(await files.presignUpload('u', { contentType: 'text/plain' })).toBe('signed:put:u:900:text/plain');
+    expect(await files.presignUpload('s', { sha256: 'ABCD' })).toBe('signed:put:s:900::abcd'); // the checksum S3 checks
+    await expect(files.presignUpload('m', { maxSize: 10 })).rejects.toThrow(/cannot cap/);
   });
 
   it('uses the default seams when none are injected (selection only)', async () => {

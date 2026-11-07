@@ -27,8 +27,9 @@ pnpm add @ayepi/env zod
 ## Two entry points
 
 - **`@ayepi/env`** — `env` (sync) and `asyncEnv` (async + providers); the `dynamic` / `pollProvider`
-  / `staticProvider` providers; `alias` (+ `varsOf`); the `coerce` primitive; `parseDotenv` (pure
-  string parser); `EnvError` and source helpers.
+  / `staticProvider` providers; `alias` (+ `varsOf`, `sourceKeyOf`); `mergeEnvs` (one view over
+  several slices); `envExample`; the `coerce` primitive; `parseDotenv` (pure string parser);
+  `EnvError` and source helpers.
 - **`@ayepi/env/load`** — `loadEnv` / `readEnvFile` (read `.env` + `.json` files into a source;
   the only `node:fs` user).
 
@@ -41,8 +42,18 @@ function env(input: EnvInput, options?: EnvOptions): Env<T>
 
 type EnvInput<Inherited> = Record<string, z.ZodType | ((inherited: Inherited) => z.ZodType | any)>
 
-interface Env<T> {
+interface EnvOptions {
+  prefix?: string                             // field PORT reads `${prefix}PORT` (aliases are read as written)
+  booleans?: { true?: string[]; false?: string[] }
+}
+
+interface Env<T> extends EnvView<T> {
   add<A>(input: A): Env<T & EnvOutput<…>>     // widen with more fields (factories see earlier fields)
+  with(fn: (env: Env<T>) => void): void       // run a side effect with the env
+  map<R>(fn: (env: Env<T>) => R): R           // run a fn with the env, return its result
+}
+
+interface EnvView<T> {                        // what Env and a mergeEnvs view share
   get<K extends keyof T>(key: K): T[K]        // resolve one field (lazy); throws EnvError if invalid
   set<K extends keyof T>(key: K, value: T[K] | string): void
   set(updates: { [K in keyof T]?: T[K] | string } & Record<string, unknown>): void
@@ -50,8 +61,7 @@ interface Env<T> {
   on(listener: (key, value) => void, opts?): () => void          // any field
   on<K>(key: K, listener: (value) => void, opts?): () => void    // one field
   on<K>(keys: K[], listener: (value) => void, opts?): () => void // several fields
-  with(fn: (env: Env<T>) => void): void       // run a side effect with the env
-  map<R>(fn: (env: Env<T>) => R): R           // run a fn with the env, return its result
+  describe(): readonly EnvFieldInfo[]         // every field: keys read, required, description, default, JSON Schema
 }
 ```
 
@@ -96,11 +106,15 @@ resolves every field and throws a single `EnvError` aggregating **all** failures
 ## `set(...)` and the source
 
 The live source is `process.env` (or `{}` off-Node) with your `set(...)` overrides merged **on top**
-(overrides win). `set(key, value)` and `set(updates)` both write into the override layer.
+(overrides win). `set(key, value)` and `set(updates)` both write into the override layer, which is
+keyed by **source key**.
 
 - Pass a **typed value** or a **raw string** — strings are coerced, typed values pass through.
-- `set(updates)` accepts known fields *and* arbitrary source keys (e.g. pass the whole `process.env`
-  or a loaded `.env`), so it composes with aliasing.
+- `set(key, value)` with a field's name writes under the first key that field reads (its prefixed
+  name, or its first alias — `sourceKeyOf(schema, key, prefix)`), so it always reaches the field.
+  A key that names no field is written as given.
+- `set(updates)` takes source keys as given (e.g. pass the whole `process.env` or a loaded
+  `.env`), so it composes with prefixes and aliasing.
 
 ```ts
 ENV.set('PORT', 8080)                  // typed
@@ -121,7 +135,62 @@ env({
 })
 ```
 
-`varsOf(schema, key)` (exported) returns the resolved key list.
+`varsOf(schema, key, prefix?)` (exported) returns the resolved key list.
+
+## Prefix — one namespace for every key
+
+`env(input, { prefix: 'APP_' })` makes field `PORT` read `APP_PORT`: the TypeScript name stays short
+and the namespace is written once. Keys named by `vars`/`var` metadata are read exactly as written
+(so an alias can reach an unprefixed key such as `PORT` from a platform). `asyncEnv` takes the same
+option.
+
+## `describe()` and `envExample(fields)`
+
+`describe()` lists every field in declaration order as an `EnvFieldInfo`:
+
+```ts
+interface EnvFieldInfo {
+  key: string                 // the field name you get()
+  vars: readonly string[]     // the source keys it reads (prefix and aliases applied); [] when computed
+  computed: boolean           // a factory that returned a plain value — reads no key
+  required: boolean           // the schema rejects a missing value (no default, not optional)
+  description?: string        // .describe(...) / .meta({ description })
+  default?: unknown           // the schema's default
+  schema?: Record<string, unknown> // JSON Schema of the accepted input (zod's toJSONSchema, io: 'input')
+}
+```
+
+A factory field is run to find its schema; if it throws (an earlier field it reads is invalid) it is
+reported as required with no `schema`. `envExample(fields)` renders the list as a commented
+`.env.example` — the description as `#` lines, `KEY=default`, `KEY=` marked `(required)`, or
+`# KEY=` when optional; computed fields are left out. A settings page can render the same list.
+
+```ts
+writeFileSync('.env.example', envExample(ENV.describe()))
+```
+
+## `mergeEnvs(...slices)` — one view over several configs
+
+A large app configures each module with its own slice. `mergeEnvs(a, b, …)` joins them into one
+`EnvView` of every field; each slice stays the source of truth for its fields:
+
+- `get` and single-field `set` go to the slice that owns the field; a bulk `set(updates)` (and a
+  single `set` of a key no field has) reaches every slice.
+- `parse()` resolves every slice and throws **one** `EnvError` with every slice's issues.
+- `on(key | keys, …)` subscribes in the owning slices; `on(listener)` in every slice (a `once`
+  listener fires once per slice). The returned function unsubscribes from all of them.
+- `describe()` lists every field, slice by slice.
+- Two slices declaring the same field name is a **compile-time error** naming it (for argument
+  tuples) and throws at runtime in every case.
+
+```ts
+import { env, mergeEnvs } from '@ayepi/env'
+
+const http = env({ PORT: z.number().default(3000) }, { prefix: 'APP_' })
+const db = env({ DB_FILE: z.string().default('app.sqlite') }, { prefix: 'APP_' })
+export const settings = mergeEnvs(http, db)   // EnvView<{ PORT: number; DB_FILE: string }>
+settings.parse()
+```
 
 ## Reactivity — `on(...)`
 
@@ -289,6 +358,8 @@ off(); ENV.close()
   calls, never its own group. Split into `add(...)` steps to express dependencies.
 - **Lazy.** Values resolve on `get`/`parse`, not at declaration. `get` throws for its one field;
   `parse` aggregates all failures.
+- **`set(updates)` is source-keyed.** With a `prefix`, `set({ PORT: '1' })` sets the source key
+  `PORT`, not the field; write `set('PORT', 1)` or `set({ APP_PORT: '1' })`.
 - **`set(...)` wins over `process.env`.** The source is `{ ...process.env, ...overrides }`. To make
   files lower precedence than `process.env`, spread `process.env` last into `set(...)`.
 - **Computed value fields aren't re-validated.** A factory returning a plain value is trusted as-is;

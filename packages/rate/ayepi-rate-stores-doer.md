@@ -153,6 +153,8 @@ interface RateLimitedDoerOptions extends LimiterOptions {
   /** Re-fire `onBacklog` every this many ms while still backed up (omit to fire once). */
   readonly backlogEveryMs?: number;
 
+  /** Which waiting task is admitted next: 'oldest' (default) or 'priority' (highest priority, then oldest). */
+  readonly order?: 'oldest' | 'priority';
   /** Floor on the re-check delay for deferred tasks (ms, default 50). */
   readonly retryFloor?: number;
   /** Clock injection (default `Date.now`). */
@@ -187,8 +189,21 @@ A `Doer` (from `@ayepi/core/doer`) that caps the **start rate** of tasks using t
 `limiter()` primitive (and the same pluggable store/algorithm) the middleware uses. It does
 **not** run tasks itself — when the limiter admits a task it hands it to an **inner doer**
 (default `unlimitedDoer()`), so you can compose a rate cap with a concurrency/ordering
-policy. Excess tasks wait, **oldest-first**; with a distributed store this rate-limits
+policy. Excess tasks wait and are admitted **oldest-first**, or with `order: 'priority'` the
+highest `priority` first (then the oldest); with a distributed store this rate-limits
 **across a fleet**.
+
+```ts
+// urgent calls never queue behind a rate-limited backlog: priority order here, a concurrency cap inside
+const llm = rateLimitedDoer({ limit: 60, window: 60_000, order: 'priority', doer: priorityDoer({ max: 4, buffer: 0 }) })
+llm.do(() => answerUser(), { priority: 10 })
+llm.do(() => summarizeInBackground(), { priority: 0 })
+```
+
+The inner doer's `available()` gates admission, so a task waits here (in `order`) rather than in
+the inner doer, and the rate budget is spent only when the inner doer can take it. A bounded inner
+doer accepts `max + buffer` tasks; give it `buffer: 0` so tasks are admitted only into a free slot
+and a later, more urgent task is never passed by one already buffered.
 
 A `Doer` exposes `available()`, `do(task, opts?)`, and `done()` — see the doer section
 below. `rateLimitedDoer`'s `available()` is `min(limit − pending, inner.available())`.
@@ -218,7 +233,7 @@ Semantics:
   consumes nothing (the group rule forces `countRejected: false`), so a task whose group is at
   its limit is **skipped**, not admitted — and no global token is spent on it.
 - **Head-of-line avoidance.** A skipped (group-capped) task is left pending while **other
-  groups' tasks proceed**, so a hot user/model can't block everyone. Within a group, oldest-first.
+  groups' tasks proceed**, so a hot user/model can't block everyone. Within a group, tasks go in `order`.
 - **Global exhaustion stops the round.** When the shared global bucket is out, nothing more is
   admitted this pass. Edge case: a task that cleared its group but then hits an exhausted global
   had its group token spent (bounded, self-corrects on retry) — only when global is the bottleneck.
@@ -366,11 +381,11 @@ limiter's dependency middleware run first and their context is available — see
 
 ### The doer abstraction
 
-`rateLimitedDoer` keeps a `pending` queue. Each `drain` scans it **oldest-first** and admits
+`rateLimitedDoer` keeps a `pending` queue. Each `drain` scans it in `order` (**oldest-first**, or priority then age) and admits
 every task that clears its gates, skipping (not blocking on) group-capped ones:
 
 - if the inner doer has no capacity (`inner.available() <= 0`), it records a short re-check and stops;
-- for the oldest not-yet-skipped task, it checks the **group gate first** (when a `group` + group
+- for the first not-yet-skipped task in `order`, it checks the **group gate first** (when a `group` + group
   limit apply): a denied group check consumes nothing, so the task is **skipped** (left pending) and
   the scan continues to other groups — recording that group's `retryAfter`;
 - then the **global gate** (`limiter.check(key, { now, cost })`): if denied, the shared bucket is out, so no

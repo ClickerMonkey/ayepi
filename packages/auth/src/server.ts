@@ -251,3 +251,5 @@ export const basicAuth = Object.assign(basicAuthDef, { server: basicServer });
 /* ---- standalone JWT primitives (node:crypto) ---- */
 export { signJwt, verifyJwt, JwtError } from './jwt';
 export type { SignJwtOptions, VerifyJwtOptions, JwtPayload, StandardClaims } from './jwt';
+export { hashPassword, verifyPassword, DEFAULT_PASSWORD_COST } from './password';
+export type { HashPasswordOptions } from './password';

@@ -32,7 +32,11 @@
  */
 
 export { env } from './env';
-export type { Env, EnvInput, EnvOutput, EnvFieldDef, EnvSet, EnvOnOptions, EnvOptions } from './env';
+export type { Env, EnvView, EnvFieldInfo, EnvInput, EnvOutput, EnvFieldDef, EnvSet, EnvOnOptions, EnvOptions } from './env';
+
+export { mergeEnvs } from './merge';
+export type { AnyEnvView, DisjointEnvs, MergedFields } from './merge';
+export { envExample } from './example';
 
 export { asyncEnv } from './async';
 export type { AsyncEnv, AsyncEnvInput, AsyncEnvOutput, AsyncEnvFieldDef } from './async';
@@ -40,7 +44,7 @@ export type { AsyncEnv, AsyncEnvInput, AsyncEnvOutput, AsyncEnvFieldDef } from '
 export { dynamic, isDynamic, pollProvider, staticProvider } from './provider';
 export type { EnvProvider, DynamicBinding, MaybePromise } from './provider';
 
-export { alias, varsOf } from './meta';
+export { alias, sourceKeyOf, varsOf } from './meta';
 export type { EnvMeta } from './meta';
 
 export { EnvError, defaultSource, mergeSources, resolveRaw } from './source';

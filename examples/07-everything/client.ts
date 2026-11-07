@@ -17,6 +17,7 @@ import { client, wsTransport, ApiError } from '@ayepi/core/client';
 import { parse } from '@ayepi/codec';
 import manifest from './manifest.gen'; // plain zod-free manifest — tree-shaken; no zod
 import type { api } from './shared'; // type-only — erased at build time
+import type { McpTool } from '@ayepi/mcp';
 
 const sdk = client<typeof api>({
   baseUrl: location.origin,
@@ -31,10 +32,8 @@ interface JobRow {
   done: boolean;
   result: number | null;
 }
-interface Tool {
-  name: string;
-  description: string;
-}
+/** A tool as `GET /tools` returns it. */
+type Tool = McpTool;
 
 createApp({
   setup() {

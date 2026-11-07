@@ -80,6 +80,8 @@ export type {
   EventsOf,
 } from './endpoint';
 export { endpoint, spec, manifestFromSpec } from './endpoint';
+export type { DisjointSpecs, MergedSpec } from './merge';
+export { mergeSpecs } from './merge';
 
 /* --- payload type machinery --- */
 export type {

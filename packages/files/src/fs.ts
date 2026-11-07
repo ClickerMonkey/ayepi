@@ -97,7 +97,12 @@ export function fsFiles(opts: FsFilesOptions): FileStore {
       return guard('put', key, async () => {
         await mkdir(dirname(path), { recursive: true });
         const tmp = `${path}.${randomBytes(8).toString('hex')}.tmp`;
-        await pipeline(Readable.fromWeb(normalize(body) as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(tmp));
+        try {
+          await pipeline(Readable.fromWeb(normalize(body) as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(tmp));
+        } catch (err) {
+          await unlink(tmp).catch(() => {}); // a failed body leaves nothing behind
+          throw err;
+        }
         await rename(tmp, path); // atomic publish
         const meta: SidecarMeta = { contentType: options?.contentType, metadata: options?.metadata ? { ...options.metadata } : undefined };
         if (meta.contentType !== undefined || meta.metadata !== undefined) {

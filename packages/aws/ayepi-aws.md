@@ -55,7 +55,7 @@ interface S3FilesOptions extends ResilientOptions {
   /** @internal Upload seam (default: `@aws-sdk/lib-storage` multipart `Upload`) — injectable for tests. */
   readonly upload?: (key: string, body: FileBody, contentType?: string, metadata?: Record<string, string>) => Promise<void>;
   /** @internal Presign seam (default: `@aws-sdk/s3-request-presigner`) — injectable for tests. */
-  readonly presign?: (kind: 'get' | 'put', key: string, expiresIn: number, contentType?: string) => Promise<string>;
+  readonly presign?: (kind: 'get' | 'put', key: string, expiresIn: number, contentType?: string, sha256?: string) => Promise<string>;
 }
 ```
 
@@ -110,7 +110,9 @@ Behavior of each method:
   `modifiedAt` but **no `contentType`** (ListObjectsV2 doesn't return it).
 - **`presignDownload(key, opts?)`** — a presigned `GET` URL (default expiry **900 s**).
 - **`presignUpload(key, opts?)`** — a presigned `PUT` URL (default expiry **900 s**); `opts.contentType`
-  pins the `Content-Type` the upload must use.
+  pins the `Content-Type` the upload must use; `opts.sha256` (hex) is signed as the object's
+  `x-amz-checksum-sha256`, so S3 refuses bytes that hash otherwise. A presigned `PUT` cannot cap a
+  body, so `opts.maxSize` rejects (use the files server, or a size check after upload).
 
 **Not-found handling.** S3 surfaces a missing key differently per op (`NoSuchKey` on GET,
 `NotFound` on HEAD). The store treats an error as not-found when its `name` is `NoSuchKey` or

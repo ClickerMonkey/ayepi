@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi } from 'vitest';
 import {
   updown,
   list as defaultList,
@@ -8,6 +8,7 @@ import {
   whenDown as defaultWhenDown,
   isReady as defaultIsReady,
   isLive as defaultIsLive,
+  type Component,
   type ProcessLike,
 } from '../src/index';
 
@@ -290,5 +291,23 @@ describe('coverage edge cases', () => {
     await lc.up();
     await lc.down();
     expect(lc.isLive()).toBe(false);
+  });
+});
+
+describe('typed component names', () => {
+  it('checks every name and dependency against the lifecycle names', async () => {
+    const lc = updown<'db' | 'http'>({ signals: false });
+    const order: string[] = [];
+    lc.register({ name: 'http', deps: ['db'], up: () => void order.push('http') });
+    lc.register({ name: 'db', up: () => void order.push('db') });
+    // @ts-expect-error — 'cache' is not one of this lifecycle's names
+    expect(() => lc.register({ name: 'cache' })).not.toThrow();
+    // @ts-expect-error — a misspelt dependency fails to compile
+    const misspelt: Component<'db' | 'http'> = { name: 'http', deps: ['dbb'] };
+    expect(misspelt.deps).toEqual(['dbb']);
+    await lc.up();
+    expect(order).toEqual(['db', 'http']);
+    expectTypeOf(lc.list()[0]!.name).toEqualTypeOf<'db' | 'http'>();
+    await lc.down();
   });
 });

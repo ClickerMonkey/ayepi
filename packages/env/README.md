@@ -100,6 +100,18 @@ env({
 })
 ```
 
+## Slices, prefixes and `.env.example`
+
+```ts
+import { env, envExample, mergeEnvs } from '@ayepi/env'
+
+const http = env({ PORT: z.number().default(3000).describe('Where to listen.') }, { prefix: 'APP_' }) // reads APP_PORT
+const db = env({ DB_FILE: z.string().default('app.sqlite') }, { prefix: 'APP_' })
+const settings = mergeEnvs(http, db)       // one typed view; a field in two slices fails to compile
+settings.parse()                           // one EnvError listing every bad field
+envExample(settings.describe())            // '# Where to listen.\nAPP_PORT=3000\n\nAPP_DB_FILE=app.sqlite\n'
+```
+
 ## Reactivity — `on(...)`
 
 Subscribe to the changes a `set(...)` (or a provider, in `asyncEnv`) causes. Computed fields update

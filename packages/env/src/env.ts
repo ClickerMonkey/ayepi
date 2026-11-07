@@ -24,9 +24,9 @@
  *
  * @module
  */
-import type { z } from 'zod';
+import { z } from 'zod';
 import { coerce, type BooleanWords } from './coerce';
-import { varsOf } from './meta';
+import { sourceKeyOf, varsOf } from './meta';
 import { EnvError, customIssue, defaultSource, errMessage, keyed, resolveRaw, type EnvSource } from './source';
 import { changed, isZodType } from './util';
 
@@ -57,6 +57,11 @@ export type EnvSet<T extends object> = {
 /** Build-time options for {@link env} / {@link asyncEnv}. */
 export interface EnvOptions {
   /**
+   * Prepended to each field's name to make the source key it reads: with `prefix: 'APP_'`, field `PORT` reads
+   * `APP_PORT`. Keys named by `vars`/`var` metadata are read as written.
+   */
+  readonly prefix?: string;
+  /**
    * Customize which strings coerce to booleans (case-insensitive). Each side you provide
    * **replaces** its default set; an omitted side keeps the default. E.g.
    * `{ booleans: { true: ['enabled'], false: ['disabled'] } }`.
@@ -85,15 +90,34 @@ export interface EnvOnOptions {
   immediate?: boolean;
 }
 
-/** A typed, lazy, reactive config object built by {@link env}. */
-export interface Env<T extends object> {
-  /** Add more fields; their factories receive the fields resolved so far. Returns a wider {@link Env}. */
-  add<A extends EnvInput<T>>(input: A): Env<T & EnvOutput<T, A>>;
+/** What {@link EnvView.describe} reports about one field — enough for a settings page or a `.env.example`. */
+export interface EnvFieldInfo {
+  /** The field's name (the key you `get`). */
+  readonly key: string;
+  /** The source keys it reads, in precedence order (prefix and aliases applied); none for a computed field. */
+  readonly vars: readonly string[];
+  /** A value computed from other fields; it reads no source key and has no schema. */
+  readonly computed: boolean;
+  /** Whether a value must be given: the schema rejects a missing one (no default, not optional). */
+  readonly required: boolean;
+  /** The schema's description (`.describe(...)` or `.meta({ description })`). */
+  readonly description?: string;
+  /** The schema's default, when it has one. */
+  readonly default?: unknown;
+  /** The JSON Schema of the accepted input (unrepresentable parts become `{}`). */
+  readonly schema?: Readonly<Record<string, unknown>>;
+}
+
+/** The reading surface of a config: {@link Env} has it, and so does a {@link mergeEnvs} view over several. */
+export interface EnvView<T extends object> {
   /** Resolve a single field (lazily). Throws an {@link EnvError} if that field is missing/invalid. */
   get<K extends keyof T>(key: K): T[K];
-  /** Override a single field/source key (typed value or raw string). */
+  /**
+   * Override a single field (typed value or raw string), written under the field's source key (its prefixed name,
+   * or its first alias). A key that names no field is written as a source key, as given.
+   */
   set<K extends keyof T>(key: K, value: T[K] | string): void;
-  /** Override several fields/source keys at once (e.g. pass `process.env` or a loaded `.env`). */
+  /** Override several source keys at once (e.g. pass `process.env` or a loaded `.env`); keys are used as given. */
   set(updates: EnvSet<T>): void;
   /** Resolve every field. Throws an aggregated {@link EnvError} listing all missing/invalid fields. */
   parse(): T;
@@ -103,6 +127,17 @@ export interface Env<T extends object> {
   on<K extends keyof T>(key: K, listener: (value: T[K]) => void, options?: EnvOnOptions): () => void;
   /** Subscribe to several fields' changes with one listener. */
   on<K extends keyof T>(keys: readonly K[], listener: (value: T[K]) => void, options?: EnvOnOptions): () => void;
+  /**
+   * Describe every field, in declaration order. A factory field is run to find its schema; one that throws (an
+   * earlier field it reads is invalid) is reported as required, without `schema`, `default` or `description`.
+   */
+  describe(): readonly EnvFieldInfo[];
+}
+
+/** A typed, lazy, reactive config object built by {@link env}. */
+export interface Env<T extends object> extends EnvView<T> {
+  /** Add more fields; their factories receive the fields resolved so far. Returns a wider {@link Env}. */
+  add<A extends EnvInput<T>>(input: A): Env<T & EnvOutput<T, A>>;
   /** Run `fn` with this env (for grouped setup); returns nothing. */
   with(fn: (env: Env<T>) => void): void;
   /** Run `fn` with this env and return its result. */
@@ -137,10 +172,12 @@ class EnvImpl {
   private readonly globalLs = new Set<GlobalListener>();
   private readonly prev = new Map<string, unknown>();
   private readonly words?: BooleanWords;
+  private readonly prefix: string;
   private groupCount = 0;
 
   constructor(input: Record<string, EnvFieldDef<unknown>>, options?: EnvOptions) {
     this.words = toWords(options);
+    this.prefix = options?.prefix ?? '';
     this.define(input);
   }
 
@@ -171,44 +208,53 @@ class EnvImpl {
     return { proxy, reads };
   }
 
+  /**
+   * What a field is made of: its schema, or the value its factory computed. A factory is run against the fields of
+   * earlier groups (recording what it reads); a throwing factory becomes an {@link EnvError} scoped to the field.
+   */
+  private produce(def: FieldDef): { readonly schema: z.ZodType } | { readonly value: unknown } {
+    if (def.kind === 'schema') {return { schema: def.schema };}
+    const { proxy, reads } = this.inheritedFor(def.group);
+    let produced: unknown;
+    try {
+      produced = def.factory(proxy);
+    } catch (err) {
+      throw new EnvError([customIssue(def.key, errMessage(err))]);
+    } finally {
+      this.deps.set(def.key, reads);
+    }
+    return isZodType(produced) ? { schema: produced } : { value: produced };
+  }
+
   /** Resolve `key` to its value (cached). Throws an {@link EnvError} (scoped to `key`) on failure. */
   private resolve(key: string): unknown {
     if (this.cache.has(key)) {return this.cache.get(key);}
-    const def = this.defs.get(key)!;
-    let schema: z.ZodType | undefined;
-    let computed: unknown;
-    let isComputed = false;
-
-    if (def.kind === 'schema') {
-      schema = def.schema;
-    } else {
-      const { proxy, reads } = this.inheritedFor(def.group);
-      let produced: unknown;
-      try {
-        produced = def.factory(proxy);
-      } catch (err) {
-        this.deps.set(key, reads);
-        throw new EnvError([customIssue(key, errMessage(err))]);
-      }
-      this.deps.set(key, reads);
-      if (isZodType(produced)) {schema = produced;}
-      else {
-        computed = produced;
-        isComputed = true;
-      }
-    }
-
+    const made = this.produce(this.defs.get(key)!);
     let result: unknown;
-    if (isComputed) {
-      result = computed;
+    if ('value' in made) {
+      result = made.value;
     } else {
-      const raw = resolveRaw(this.source(), varsOf(schema!, key));
-      const res = schema!.safeParse(raw !== undefined ? coerce(schema!, raw, this.words) : undefined);
+      const { schema } = made;
+      const raw = resolveRaw(this.source(), varsOf(schema, key, this.prefix));
+      const res = schema.safeParse(raw !== undefined ? coerce(schema, raw, this.words) : undefined);
       if (!res.success) {throw new EnvError(keyed(key, res.error.issues));}
       result = res.data;
     }
     this.cache.set(key, result);
     return result;
+  }
+
+  describe(): readonly EnvFieldInfo[] {
+    return [...this.defs.values()].map((def): EnvFieldInfo => {
+      let made: { readonly schema: z.ZodType } | { readonly value: unknown };
+      try {
+        made = this.produce(def);
+      } catch {
+        return { key: def.key, vars: [this.prefix + def.key], computed: false, required: true };
+      }
+      if ('value' in made) {return { key: def.key, vars: [], computed: true, required: false };}
+      return describeSchema(def.key, made.schema, this.prefix);
+    });
   }
 
   get(key: string): unknown {
@@ -230,9 +276,16 @@ class EnvImpl {
   }
 
   set(keyOrUpdates: string | EnvSet<Record<string, unknown>>, value?: unknown): void {
-    const updates = typeof keyOrUpdates === 'string' ? { [keyOrUpdates]: value } : keyOrUpdates;
+    const updates = typeof keyOrUpdates === 'string' ? { [this.sourceKey(keyOrUpdates)]: value } : keyOrUpdates;
     Object.assign(this.overrides, updates);
     this.invalidate();
+  }
+
+  /** The source key `set(key, value)` writes: a field's first source key, or `key` itself when no field has that name. */
+  private sourceKey(key: string): string {
+    const def = this.defs.get(key);
+    if (def === undefined) {return key;}
+    return sourceKeyOf(def.kind === 'factory' ? undefined : def.schema, key, this.prefix);
   }
 
   add(input: Record<string, EnvFieldDef<unknown>>): this {
@@ -367,6 +420,20 @@ class EnvImpl {
       }
     }
   }
+}
+
+/** Describe a field read through `schema`: the keys it reads, whether it is required, and its documented shape. */
+function describeSchema(key: string, schema: z.ZodType, prefix: string): EnvFieldInfo {
+  const { $schema: _dialect, ...shape } = z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' });
+  return {
+    key,
+    vars: varsOf(schema, key, prefix),
+    computed: false,
+    required: !schema.safeParse(undefined).success,
+    ...(schema.description === undefined ? {} : { description: schema.description }),
+    ...('default' in shape ? { default: shape.default } : {}),
+    schema: shape,
+  };
 }
 
 /** Build a typed, lazy, reactive config from a record of fields. Reads `process.env` by default. */

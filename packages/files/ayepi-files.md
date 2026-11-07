@@ -96,7 +96,7 @@ The whole storage surface — S3's core operations, nothing more.
 ```ts
 interface Presigner {
   presignDownload(key: string, opts?: { expiresIn?: number }): Promise<string>;
-  presignUpload(key: string, opts?: { expiresIn?: number; contentType?: string }): Promise<string>;
+  presignUpload(key: string, opts?: { expiresIn?: number; contentType?: string; maxSize?: number; sha256?: string }): Promise<string>;
 }
 ```
 
@@ -107,7 +107,10 @@ the filesystem store gets a `Presigner` from `@ayepi/files/server` (`mountFiles`
 
 - `presignDownload(key, opts?)` — a time-limited URL to GET `key`. `expiresIn` is in seconds.
 - `presignUpload(key, opts?)` — a time-limited URL to PUT `key`. `expiresIn` in seconds;
-  `contentType` pins the `Content-Type` the upload records.
+  `contentType` pins the `Content-Type` the upload records. `maxSize` caps the body in bytes and
+  `sha256` (hex, any case) pins the hash the bytes must have; an upload that breaks either is
+  refused and nothing is stored. `s3Files` signs `sha256` as S3's `x-amz-checksum-sha256` and
+  rejects `maxSize` (a presigned `PUT` cannot cap a body).
 
 ### Stream helpers (`@ayepi/files`)
 
@@ -166,7 +169,7 @@ A Node filesystem-backed `FileStore` rooted at `opts.dir`:
 A store like `fsFiles` can't hand out working URLs on its own — it has no HTTP surface. This
 module signs short-lived, HMAC-stamped tokens and serves the matching GET/PUT two ways. The
 token is `base64url(payload).hmac-sha256` carrying the key, op (`get`/`put`), expiry, and
-(for uploads) the pinned content-type — so the URL is **opaque and tamper-evident**, and the
+(for uploads) the pinned content-type, size cap and SHA-256 — so the URL is **opaque and tamper-evident**, and the
 key never appears in the clear. Verification uses `timingSafeEqual` and rejects expired,
 tampered, wrong-op, or unparseable tokens.
 
@@ -198,7 +201,11 @@ point at them:
   work.
 - `ayepiFilesUpload` — `PUT ${basePath}?t=…`, a `streamIn`. Verifies the token
   (`o === 'put'`), streams the request body straight into `store.put` (recording the pinned
-  `contentType`), and responds `{ key, size }`.
+  `contentType`), and responds `{ key, size }`. A token's `maxSize` and `sha256` are checked as
+  the body streams: a declared `Content-Length` over the cap is refused before reading, a body
+  that grows past it errors mid-stream (`413 TOO_LARGE`), and one whose hash differs errors at
+  the end (`422 CHECKSUM_MISMATCH`). The error reaches the store as a failed body stream, so
+  `fsFiles` never publishes the object and removes its temp file.
 
 Tear the routes down later with `app.uninstall(handle)`.
 
@@ -215,8 +222,9 @@ works on any runtime**. It returns `undefined` for requests whose pathname isn't
 so you compose it around your server's `fetch` and fall through on a path miss. GET streams
 the object back with `content-type` + `content-length` headers (403 on a bad/wrong-op token,
 404 if the object is missing); PUT streams the body into `store.put` and returns
-`{ key, size }` JSON (an absent request body is treated as empty → `size: 0`); any other
-method is `405`.
+`{ key, size }` JSON (an absent request body is treated as empty → `size: 0`), with the same
+`maxSize`/`sha256` checks answered as `{ error: { code, message } }` with `413`/`422`; any other
+method is `405`. Both styles export the refusal as `UploadRefused` (`status`, `code`).
 
 > **Why presign needs server endpoints for the filesystem store:** a `Presigner` URL only
 > works if something serves it. S3 *is* the server, so `s3Files` signs URLs AWS already

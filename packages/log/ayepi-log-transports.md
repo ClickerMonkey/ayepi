@@ -63,7 +63,7 @@ const cap: Transport = { name: 'cap', write: (_r, text) => { line = text } }
 function consoleTransport(opts?: ConsoleTransportOptions): Transport
 
 interface ConsoleTransportOptions {
-  /** The console to write through — should be the original (pre-interception) console to avoid recursion. */
+  /** The console to write through (default the global console); its methods are bound when the transport is made. */
   readonly console?: ConsoleLike
   /** Map a record level to a console method (default: error→error, warn→warn, debug→debug, else→log). */
   readonly method?: (level: Level) => keyof ConsoleLike
@@ -81,6 +81,10 @@ interface ConsoleLike {
 Writes the pre‑formatted `text` to the level‑mapped console method. The default level →
 method mapping is `error → error`, `warn → warn`, `debug → debug`, everything else →
 `log`.
+
+The console's methods are bound when `consoleTransport()` is called, so a transport made
+before `interceptConsole()` keeps writing to the original methods afterwards, and no line
+loops back into the logger.
 
 The default logger's default transport is a `consoleTransport` bound to the **captured
 original** console (taken before any interception is installed), so logs aren't recursed

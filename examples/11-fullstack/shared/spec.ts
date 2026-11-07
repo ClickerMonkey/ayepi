@@ -24,6 +24,7 @@ import { bearerAuth } from '@ayepi/auth';
 import { rateLimit } from '@ayepi/rate';
 import { telemetry } from '@ayepi/otel';
 import { cache } from '@ayepi/cache';
+import { McpTool } from '@ayepi/mcp';
 
 /** Custom JWT claims carried by the token: who you are and your role. */
 export const Claims = z.object({ user: z.string(), role: z.enum(['user', 'admin']) });
@@ -150,7 +151,7 @@ export const api = spec({
       /** This very spec as Model Context Protocol tools (one per endpoint). */
       tools: {
         method: 'GET',
-        response: z.array(z.object({ name: z.string(), description: z.string(), inputSchema: z.unknown() })),
+        response: z.array(McpTool),
         doc: { summary: 'List this API as MCP agent tools (@ayepi/mcp)', tags: ['mcp'] },
       },
 

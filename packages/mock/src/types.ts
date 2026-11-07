@@ -8,6 +8,13 @@
  * @module
  */
 
+import type { AnySpec, EventsOf } from '@ayepi/core';
+
+/** A spec's endpoint names. */
+export type EndpointName<S extends AnySpec> = keyof S['endpoints'] & string;
+/** A spec's event names. */
+export type EventName<S extends AnySpec> = keyof EventsOf<S> & string;
+
 /**
  * Context handed to override callbacks (and threaded through the generator). It
  * exposes where in the schema we are ({@link GenContext.path | path}), the seeded
@@ -56,4 +63,28 @@ export interface MockOptions {
   readonly overrides?: MockOverrides;
   /** Clock used for date generation (injectable for tests). Default `Date.now`. */
   readonly now?: () => number;
+}
+
+/** Options for {@link mockHandlers}: generation options plus the endpoints to leave out. */
+export interface MockHandlersOptions<X extends string = never> extends MockOptions {
+  /** Endpoints to skip (you implement them for real); the returned bag's type omits them. */
+  readonly except?: readonly X[];
+}
+
+/** Options for {@link mockEvents}: generation options plus which events to emit. */
+export interface MockEventsOptions<S extends AnySpec> extends MockOptions {
+  /** The events `tick`/`start` pick from. Default: every event in the spec. */
+  readonly only?: readonly EventName<S>[];
+}
+
+/** A generated event emitter over a server (see {@link mockEvents}). */
+export interface MockEvents<S extends AnySpec> {
+  /** Emit one generated event (params and data both generated) now. */
+  emit(name: EventName<S>): void;
+  /** Emit the next event from the chosen set, in order. Does nothing for a spec with no events. */
+  tick(): void;
+  /** Call {@link MockEvents.tick | tick} every `every` ms until {@link MockEvents.stop | stop}. Restarts if already running. */
+  start(every: number): void;
+  /** Stop the timer `start` began. Safe to call when not running. */
+  stop(): void;
 }

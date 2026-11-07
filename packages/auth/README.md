@@ -112,6 +112,14 @@ const claims = verifyJwt<{ userId: string }>(token, { secret, issuer: 'api', clo
 `signJwt` sets `iat` to now and `exp` to `iat + (expiresIn ?? 3600)`. `verifyJwt` checks
 structure, the `HS256` alg, the signature (constant-time), then `exp`/`nbf`/`iss`/`aud`.
 
+## Password hashing
+
+```ts
+import { hashPassword, verifyPassword } from '@ayepi/auth/server';
+const stored = await hashPassword('correct horse');      // scrypt$15$8$1$<salt>$<key>
+await verifyPassword('correct horse', stored);            // true; false for anything else
+```
+
 ## OpenAPI security docs
 
 Each def contributes a scheme automatically (the contract lives on the def, so the docs are

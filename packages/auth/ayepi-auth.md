@@ -254,6 +254,23 @@ try {
 - `verifyJwt` is the **only** thing that throws `JwtError`; signature compare is constant
   time via `crypto.timingSafeEqual`.
 
+## Password hashing
+
+`hashPassword(password, { cost? })` and `verifyPassword(password, hash)` (from
+`@ayepi/auth/server`) store passwords as self-describing scrypt hashes,
+`scrypt$<log2 N>$<r>$<p>$<salt>$<key>`. A hash records its own parameters, so raising
+`cost` (default `DEFAULT_PASSWORD_COST`, 15) still verifies older hashes. Each hash is
+salted; verification is constant-time and answers `false` for a wrong password or a
+string that is not one of these hashes, never throwing. Pair it with `basicAuth`'s
+`verify`, or a sign-in endpoint that then mints a bearer token.
+
+```ts
+import { hashPassword, verifyPassword } from '@ayepi/auth/server';
+
+const stored = await hashPassword('correct horse');
+await verifyPassword('correct horse', stored); // true
+```
+
 ## OpenAPI security docs
 
 Each middleware contributes a security scheme through `doc.security`, so every guarded
@@ -338,6 +355,11 @@ Binds a `basicAuth` def. `verify`'s return is type-aligned to the def's `User`.
 See [Standalone JWT utilities](#standalone-jwt-utilities). Imported from `@ayepi/auth/server`.
 `JwtPayload<Claims>` is `Claims & StandardClaims`; `StandardClaims` covers the seven
 registered claims.
+
+#### `hashPassword(password, { cost? })` / `verifyPassword(password, hash)`
+
+See [Password hashing](#password-hashing). `cost` is log2 of scrypt's N, 1 to 24
+(`RangeError` otherwise).
 
 ## Gotchas
 

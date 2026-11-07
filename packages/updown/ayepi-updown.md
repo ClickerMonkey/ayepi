@@ -86,11 +86,11 @@ exports.
 ### `Component`
 
 ```ts
-interface Component {
+interface Component<N extends string = string> {
   /** Unique name. */
-  readonly name: string
+  readonly name: N
   /** Names of components that must be **up** before this one starts (shutdown runs in reverse). */
-  readonly deps?: readonly string[]
+  readonly deps?: readonly N[]
   /** Startup work — `up()` awaits this. */
   readonly up?: () => MaybePromise<void>
   /** Pre-shutdown hook (the drain phase: stop accepting work, finish in-flight). */
@@ -103,18 +103,36 @@ interface Component {
 All hooks may be sync or async (`MaybePromise<void> = void | Promise<void>`). A component
 with no hooks at all is legal — it's just an ordering node / a thing to report in `list()`.
 
+### Typed names
+
+`updown<N>()`, `UpDown<N>`, `Component<N>`, `UpDownOptions<N>` and `ComponentStatus<N>` take the union
+of component names (default `string`). Name it once and every `name` and `deps` entry is checked at
+compile time, so a misspelt dependency fails to build instead of failing `up()`:
+
+```ts
+const NAMES = { db: 'db', http: 'http' } as const
+type Name = (typeof NAMES)[keyof typeof NAMES]
+
+const lc = updown<Name>()
+lc.register({ name: NAMES.db, up: () => db.connect() })
+lc.register({ name: NAMES.http, deps: [NAMES.db], up: () => listen() })
+lc.register({ name: 'http', deps: ['dbb'] }) // ✗ compile error: 'dbb' is not a Name
+```
+
+Cycles and missing registrations are still found at `up()` (they depend on what was registered).
+
 ### `UpDownOptions`
 
 ```ts
-interface UpDownOptions {
+interface UpDownOptions<N extends string = string> {
   /** Process signals that trigger `down()` (default `['SIGTERM', 'SIGINT']`); `false` to disable. */
   readonly signals?: readonly Signal[] | false
   /** Call `process.exit(0)` after a **signal-triggered** shutdown completes (default `true`). Explicit `down()` never exits. */
   readonly exit?: boolean
   /** Bound `up()` and `down()` each to this many milliseconds (0 / omitted = no timeout). */
   readonly timeout?: number
-  /** Called when a component hook throws (shutdown is best-effort and continues). */
-  readonly onError?: (error: unknown, phase: Phase, name: string) => void
+  /** Called when a component hook throws (shutdown is best-effort and continues); '*' names a down() timeout. */
+  readonly onError?: (error: unknown, phase: Phase, name: N | '*') => void
   /** Override the process object signals attach to (defaults to the global `process`). */
   readonly process?: ProcessLike
 }
@@ -136,9 +154,9 @@ interface UpDownOptions {
 ### `UpDown` — the controller interface
 
 ```ts
-interface UpDown {
+interface UpDown<N extends string = string> {
   /** Register a component. Chainable. Throws after `up()` has started or on a duplicate name. */
-  register(component: Component): UpDown
+  register(component: Component<N>): UpDown<N>
   /** Start all components in dependency order. Idempotent (returns the same promise). Rejects if any `up` throws. */
   up(): Promise<void>
   /** Run the pre then post shutdown phases in reverse-dependency order. Idempotent. Always resolves (best-effort). */
@@ -150,7 +168,7 @@ interface UpDown {
   /** `true` once up completes and shutdown has not been requested. */
   isLive(): boolean
   /** A snapshot of every registered component and its status. */
-  list(): ComponentStatus[]
+  list(): ComponentStatus<N>[]
 }
 ```
 
@@ -178,9 +196,9 @@ type Status = 'idle' | 'starting' | 'up' | 'pre' | 'post' | 'down' | 'failed'
 type Phase = 'up' | 'pre' | 'post'
 
 /** A component's name, deps, current Status, and last error (if any). */
-interface ComponentStatus {
-  readonly name: string
-  readonly deps: readonly string[]
+interface ComponentStatus<N extends string = string> {
+  readonly name: N
+  readonly deps: readonly N[]
   readonly status: Status
   readonly error?: unknown
 }

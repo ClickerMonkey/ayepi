@@ -35,6 +35,12 @@ The first `Error` arg becomes the record's `error`; any further `Error` args bec
 `additionalErrors`. Non‑`Error` values become `{ name: 'NonError', message }` (the message
 is the string itself, or `String(value)`, guarded against unstringifiable values).
 
+An object arg's `error` field lands on the same reserved key when no `Error` arg took it, and
+is normalized to a `SerializedError` too: a string becomes `{ name: 'Error', message }` (so
+`log.warn('job.failed', { error: 'timed out' })` renders `error=Error: timed out`), a value
+that already has a string `name` and `message` is kept, and anything else is serialized as
+above. With an `Error` arg present, the field's value moves aside to `error2`.
+
 ```ts
 const e1 = new Error('first'); (e1 as { code?: string }).code = 'E1'
 const e2 = new TypeError('second')

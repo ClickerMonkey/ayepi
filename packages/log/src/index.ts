@@ -67,16 +67,22 @@ const globalConsole = (): ConsoleLike => (globalThis as { console?: ConsoleLike 
 
 /** Options for {@link consoleTransport}. */
 export interface ConsoleTransportOptions {
-  /** The console to **write through** — should be the original (pre-interception) console to avoid recursion. */
+  /**
+   * The console to write through (default the global `console`). Its methods are bound when the transport is made,
+   * so a later `interceptConsole()` that replaces them never feeds a line back into the logger.
+   */
   readonly console?: ConsoleLike;
   /** Map a record level to a console method (default: error→error, warn→warn, debug→debug, else→log). */
   readonly method?: (level: Level) => keyof ConsoleLike;
 }
 const defaultMethod = (level: Level): keyof ConsoleLike => (level === 'error' ? 'error' : level === 'warn' ? 'warn' : level === 'debug' ? 'debug' : 'log');
 
-/** A {@link Transport} that writes the formatted line to a console. */
+/**
+ * A {@link Transport} that writes the formatted line to a console. The console's methods are captured when the
+ * transport is made, so make it before intercepting the console.
+ */
 export function consoleTransport(opts: ConsoleTransportOptions = {}): Transport {
-  const target = opts.console ?? globalConsole();
+  const target = captureConsole(opts.console ?? globalConsole());
   const pick = opts.method ?? defaultMethod;
   return {
     name: 'console',

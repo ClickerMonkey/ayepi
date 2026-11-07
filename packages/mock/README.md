@@ -32,8 +32,9 @@ const res = await app.fetch(new Request('http://x/listUsers?limit=10', { method:
 ## Exports
 
 - `generate(schema, opts?, ctx?)` — one fake value from a zod schema.
-- `mockHandlers(spec, opts?)` — a handler bag for `server(spec, [implement(spec).handlers(bag)])`.
+- `mockHandlers(spec, opts?)` — a handler bag typed per endpoint for `server(spec, [implement(spec).handlers(bag)])`; `except` leaves out the endpoints you implement for real.
 - `mockServer(spec, opts?)` — a real ayepi `Server` with generated responses.
+- `mockEvents(app, opts?)` — generated, schema-valid events through a server's `emit`, on demand or on a timer.
 
 See [`ayepi-mock.md`](./ayepi-mock.md) for the full reference (options, seeding,
 determinism, pagination, overrides, supported zod types, and gotchas).

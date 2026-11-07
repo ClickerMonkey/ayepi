@@ -29,12 +29,24 @@ function readMeta(schema: z.ZodType): EnvMeta | undefined {
   return (schema as { meta?: () => EnvMeta | undefined }).meta?.();
 }
 
-/** The source keys a field reads, in precedence order — its `vars`/`var` meta, else `[key]`. */
-export function varsOf(schema: z.ZodType, key: string): readonly string[] {
+/**
+ * The source keys a field reads, in precedence order — its `vars`/`var` meta (taken as written), else
+ * `[prefix + key]`.
+ */
+export function varsOf(schema: z.ZodType, key: string, prefix = ''): readonly string[] {
   const meta = readMeta(schema);
   if (meta?.vars && meta.vars.length > 0) {return meta.vars;}
   if (meta?.var) {return [meta.var];}
-  return [key];
+  return [prefix + key];
+}
+
+/**
+ * The source key a field is written under by a single-field `set`: the first key it reads. `schema` is undefined for
+ * a factory field, whose schema is only known once it runs; it is written under its prefixed name.
+ */
+export function sourceKeyOf(schema: z.ZodType | undefined, key: string, prefix = ''): string {
+  const meta = schema === undefined ? undefined : readMeta(schema);
+  return meta?.vars?.[0] ?? meta?.var ?? prefix + key;
 }
 
 /** Attach aliasing metadata: read `schema` from the first present of `keys`. */

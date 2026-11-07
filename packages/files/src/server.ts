@@ -17,11 +17,11 @@
  * @module
  */
 
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { spec, endpoint, implement, reject } from '@ayepi/core';
 import type { AnySpec, Server, MountHandle } from '@ayepi/core';
 import { z } from 'zod';
-import type { FileStore, Presigner, PresignDownloadOptions, PresignUploadOptions } from './index';
+import type { FileInfo, FileStore, Presigner, PresignDownloadOptions, PresignUploadOptions } from './index';
 
 /** Default presigned-URL lifetime (seconds). */
 const DEFAULT_EXPIRES_IN = 15 * 60;
@@ -39,6 +39,72 @@ interface Token {
   readonly e: number;
   /** Pinned content-type (uploads). */
   readonly c?: string;
+  /** Most bytes the upload may carry (uploads). */
+  readonly m?: number;
+  /** SHA-256 (lowercase hex) the uploaded bytes must hash to (uploads). */
+  readonly h?: string;
+}
+
+/** Why an upload was refused: its body broke a limit its token pins. */
+export class UploadRefused extends Error {
+  /** The HTTP status the refusal answers with. */
+  readonly status: 413 | 422;
+  /** A stable code: `TOO_LARGE` or `CHECKSUM_MISMATCH`. */
+  readonly code: 'TOO_LARGE' | 'CHECKSUM_MISMATCH';
+
+  constructor(status: 413 | 422, code: 'TOO_LARGE' | 'CHECKSUM_MISMATCH', message: string) {
+    super(message);
+    this.name = 'UploadRefused';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/**
+ * Check an upload body against its token while it streams: past `m` bytes, or at the end when the bytes don't
+ * hash to `h`, the stream errors with {@link UploadRefused}, so the store never publishes the object.
+ */
+function guardUpload(body: ReadableStream<Uint8Array>, token: Token): ReadableStream<Uint8Array> {
+  const { m: max, h: sha256 } = token;
+  if (max === undefined && sha256 === undefined) {return body;}
+  const hash = sha256 === undefined ? undefined : createHash('sha256');
+  let size = 0;
+  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      size += chunk.length;
+      if (max !== undefined && size > max) {throw new UploadRefused(413, 'TOO_LARGE', `upload is larger than ${max} bytes`);}
+      hash?.update(chunk);
+      controller.enqueue(chunk);
+    },
+    flush() {
+      if (hash !== undefined && hash.digest('hex') !== sha256) {throw new UploadRefused(422, 'CHECKSUM_MISMATCH', 'upload does not match its sha256');}
+    },
+  }));
+}
+
+/**
+ * Store a presigned upload under its token's key, refusing it up front when a declared `Content-Length` already
+ * breaks the token's `maxSize`. Throws {@link UploadRefused} when the body breaks a pinned limit.
+ */
+async function storeUpload(store: FileStore, token: Token, body: ReadableStream<Uint8Array>, declared: string | null): Promise<FileInfo> {
+  const length = declared === null ? undefined : Number(declared);
+  if (token.m !== undefined && length !== undefined && length > token.m) {
+    await body.cancel().catch(() => undefined);
+    throw new UploadRefused(413, 'TOO_LARGE', `upload is larger than ${token.m} bytes`);
+  }
+  try {
+    return await store.put(token.k, guardUpload(body, token), { contentType: token.c });
+  } catch (err) {
+    throw refusalIn(err) ?? err;
+  }
+}
+
+/** The {@link UploadRefused} behind a store failure, if a guard caused it (stores may wrap stream errors). */
+function refusalIn(err: unknown): UploadRefused | undefined {
+  for (let e: unknown = err, depth = 0; e instanceof Error && depth < 4; e = e.cause, depth++) {
+    if (e instanceof UploadRefused) {return e;}
+  }
+  return undefined;
 }
 
 const b64url = (buf: Buffer | string): string => Buffer.from(buf).toString('base64url');
@@ -91,7 +157,7 @@ function makePresigner(opts: FilesServerOptions): Presigner {
   const exp = (expiresIn?: number): number => Math.floor(now() / MS_PER_SECOND) + (expiresIn ?? defaultTtl);
   return {
     presignDownload: (key, o?: PresignDownloadOptions) => Promise.resolve(url({ k: key, o: 'get', e: exp(o?.expiresIn) })),
-    presignUpload: (key, o?: PresignUploadOptions) => Promise.resolve(url({ k: key, o: 'put', e: exp(o?.expiresIn), c: o?.contentType })),
+    presignUpload: (key, o?: PresignUploadOptions) => Promise.resolve(url({ k: key, o: 'put', e: exp(o?.expiresIn), c: o?.contentType, m: o?.maxSize, h: o?.sha256?.toLowerCase() })),
   };
 }
 
@@ -127,11 +193,16 @@ export function mountFiles(app: Server<AnySpec>, store: FileStore, opts: FilesSe
       length(obj.info.size); // enables Content-Length + Range
       return obj.stream();
     },
-    ayepiFilesUpload: async ({ data, stream }) => {
+    ayepiFilesUpload: async ({ data, stream, req }) => {
       const token = verifyToken(opts.secret, data.t, Math.floor((opts.now ?? Date.now)() / MS_PER_SECOND));
       if (!token || token.o !== 'put') {throw reject(403, 'FORBIDDEN', 'invalid or expired token');}
-      const info = await store.put(token.k, stream, { contentType: token.c });
-      return { key: info.key, size: info.size };
+      try {
+        const info = await storeUpload(store, token, stream, req.headers.get('content-length'));
+        return { key: info.key, size: info.size };
+      } catch (err) {
+        if (err instanceof UploadRefused) {throw reject(err.status, err.code, err.message);}
+        throw err;
+      }
     },
   });
   const install = app.install as unknown as (s: AnySpec, b: readonly unknown[]) => MountHandle; // internal cast: erased install for the dynamically-built files spec
@@ -173,8 +244,13 @@ export function createFilesHandler(
     if (req.method === 'PUT') {
       if (!token || token.o !== 'put') {return new Response('forbidden', { status: 403 });}
       const body = req.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() });
-      const info = await store.put(token.k, body, { contentType: token.c });
-      return Response.json({ key: info.key, size: info.size });
+      try {
+        const info = await storeUpload(store, token, body, req.headers.get('content-length'));
+        return Response.json({ key: info.key, size: info.size });
+      } catch (err) {
+        if (err instanceof UploadRefused) {return Response.json({ error: { code: err.code, message: err.message } }, { status: err.status });} // core's error envelope
+        throw err;
+      }
     }
     return new Response('method not allowed', { status: 405 });
   };

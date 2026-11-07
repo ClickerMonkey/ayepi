@@ -17,7 +17,7 @@
 import type { z } from 'zod';
 import { coerce, type BooleanWords } from './coerce';
 import { toWords, type EnvOnOptions, type EnvOptions, type EnvSet } from './env';
-import { varsOf } from './meta';
+import { sourceKeyOf, varsOf } from './meta';
 import { isDynamic, type DynamicBinding, type EnvProvider, type MaybePromise } from './provider';
 import { EnvError, customIssue, defaultSource, errMessage, keyed, resolveRaw, type EnvSource } from './source';
 import { changed, isZodType } from './util';
@@ -47,9 +47,9 @@ export interface AsyncEnv<T extends object> {
   add<A extends AsyncEnvInput<T>>(input: A): AsyncEnv<T & AsyncEnvOutput<T, A>>;
   /** Resolve a single field (lazily, async). Rejects with an {@link EnvError} if missing/invalid. */
   get<K extends keyof T>(key: K): Promise<T[K]>;
-  /** Override a single field/source key (typed value or raw string). */
+  /** Override a single field (typed value or raw string), under its source key (prefixed name or first alias); another key is used as given. */
   set<K extends keyof T>(key: K, value: T[K] | string): void;
-  /** Override several fields/source keys at once. */
+  /** Override several source keys at once; keys are used as given. */
   set(updates: EnvSet<T>): void;
   /** Resolve every field. Rejects with an aggregated {@link EnvError} listing all failures. */
   parse(): Promise<T>;
@@ -100,10 +100,12 @@ class AsyncEnvImpl {
   private readonly started = new Set<string>();
   private readonly watchers = new Map<string, () => void>();
   private readonly words?: BooleanWords;
+  private readonly prefix: string;
   private groupCount = 0;
 
   constructor(input: Record<string, AsyncEnvFieldDef<unknown>>, options?: EnvOptions) {
     this.words = toWords(options);
+    this.prefix = options?.prefix ?? '';
     this.define(input);
   }
 
@@ -154,7 +156,7 @@ class AsyncEnvImpl {
   private async compute(key: string): Promise<unknown> {
     const def = this.defs.get(key)!;
     if (def.kind === 'schema') {
-      return this.validate(def.schema, key, resolveRaw(this.source(), varsOf(def.schema, key)) as string | undefined);
+      return this.validate(def.schema, key, resolveRaw(this.source(), varsOf(def.schema, key, this.prefix)) as string | undefined);
     }
     if (def.kind === 'dynamic') {
       await this.ensureStarted(def);
@@ -174,7 +176,7 @@ class AsyncEnvImpl {
       throw new EnvError([customIssue(key, errMessage(err))]);
     }
     this.deps.set(key, reads);
-    if (isZodType(produced)) {return this.validate(produced, key, resolveRaw(this.source(), varsOf(produced, key)) as string | undefined);}
+    if (isZodType(produced)) {return this.validate(produced, key, resolveRaw(this.source(), varsOf(produced, key, this.prefix)) as string | undefined);}
     return produced;
   }
 
@@ -220,9 +222,16 @@ class AsyncEnvImpl {
   }
 
   set(keyOrUpdates: string | EnvSet<Record<string, unknown>>, value?: unknown): void {
-    const updates = typeof keyOrUpdates === 'string' ? { [keyOrUpdates]: value } : keyOrUpdates;
+    const updates = typeof keyOrUpdates === 'string' ? { [this.sourceKey(keyOrUpdates)]: value } : keyOrUpdates;
     Object.assign(this.overrides, updates);
     void this.emitChange();
+  }
+
+  /** The source key `set(key, value)` writes: a field's first source key, or `key` itself when no field has that name. */
+  private sourceKey(key: string): string {
+    const def = this.defs.get(key);
+    if (def === undefined) {return key;}
+    return sourceKeyOf(def.kind === 'factory' ? undefined : def.schema, key, this.prefix);
   }
 
   add(input: Record<string, AsyncEnvFieldDef<unknown>>): this {

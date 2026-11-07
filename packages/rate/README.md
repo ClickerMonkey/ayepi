@@ -86,8 +86,8 @@ await lim.reset(userId) // clear a key
 `rateLimitedDoer` is a [`Doer`](https://www.npmjs.com/package/@ayepi/core) (from
 `@ayepi/core/doer`) that caps the **start rate** of tasks through the same `limiter()`
 primitive — so an `@ayepi/work` engine processes work no faster than a budget allows.
-It also stays on the main `@ayepi/rate` entry. Excess tasks wait, oldest-first, and a
-distributed store limits across a fleet:
+It also stays on the main `@ayepi/rate` entry. Excess tasks wait and are admitted oldest-first
+(or most urgent first with `order: 'priority'`), and a distributed store limits across a fleet:
 
 ```ts
 import { rateLimitedDoer } from '@ayepi/rate'

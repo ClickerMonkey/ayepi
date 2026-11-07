@@ -607,6 +607,11 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
     readonly length: (totalBytes: number) => void;
   }
 
+  /** Whether an endpoint takes input a handler sees as `data`: a raw body, or any param, query, body or file key. */
+  function declaresInput(e: NormalizedEp): boolean {
+    return e.bRaw || e.p.length > 0 || e.q.length > 0 || (e.b?.length ?? 0) > 0 || e.f.length > 0;
+  }
+
   /** disjoint kinds: split a flat data payload back into p/q/b by the endpoint's key tables */
   function kindsFromData(e: NormalizedEp, data: unknown): { p: Bag; q: Bag; b: unknown } {
     if (e.bRaw) {return { p: {}, q: {}, b: data };}
@@ -651,7 +656,9 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
       if (RESERVED_CTX.has(k)) {throw new Error(`middleware ctx key "${k}" collides with a reserved payload name`);}
       payload[k] = v;
     }
-    if (e.bRaw || Object.keys(data as Bag).length > 0) {payload.data = data;}
+    /* `data` is there whenever the endpoint declares input (as `HandlerPayload` types it), even when every
+       field is optional and the request left them all out: the handler then gets `{}`, never a missing key. */
+    if (declaresInput(e)) {payload.data = data;}
     if (kinds.stream) {payload.stream = kinds.stream;}
     if (streamCtl) {
       payload.out = streamCtl.out;

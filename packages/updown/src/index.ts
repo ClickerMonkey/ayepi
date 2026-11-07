@@ -25,6 +25,9 @@
  * // SIGTERM → pre (drain) → isReady=false → post (close) → process exits
  * ```
  *
+ * **Typed names.** `updown<'db' | 'http'>()` types every component's `name` and `deps` by that union,
+ * so a misspelt name or dependency fails to compile rather than at `up()`.
+ *
  * @module
  */
 
@@ -38,12 +41,15 @@ const EXIT_OK = 0;
 /** A process signal name (e.g. `'SIGTERM'`). */
 export type Signal = 'SIGTERM' | 'SIGINT' | 'SIGHUP' | 'SIGUSR2' | (string & {});
 
-/** A registered lifecycle component. */
-export interface Component {
+/**
+ * A registered lifecycle component. `N` is the union of component names its lifecycle knows (default: any string),
+ * so `name` and `deps` are checked against it.
+ */
+export interface Component<N extends string = string> {
   /** Unique name. */
-  readonly name: string;
+  readonly name: N;
   /** Names of components that must be **up** before this one starts (shutdown runs in reverse). */
-  readonly deps?: readonly string[];
+  readonly deps?: readonly N[];
   /** Startup work — `up()` awaits this. */
   readonly up?: () => MaybePromise<void>;
   /** Pre-shutdown hook (the drain phase: stop accepting work, finish in-flight). */
@@ -56,9 +62,9 @@ export interface Component {
 export type Status = 'idle' | 'starting' | 'up' | 'pre' | 'post' | 'down' | 'failed';
 
 /** A component's name, deps, current {@link Status}, and last error (if any). */
-export interface ComponentStatus {
-  readonly name: string;
-  readonly deps: readonly string[];
+export interface ComponentStatus<N extends string = string> {
+  readonly name: N;
+  readonly deps: readonly N[];
   readonly status: Status;
   readonly error?: unknown;
 }
@@ -73,24 +79,24 @@ export interface ProcessLike {
   exit?(code: number): void;
 }
 
-/** Options for {@link updown}. */
-export interface UpDownOptions {
+/** Options for {@link updown}; `N` is the lifecycle's component names. */
+export interface UpDownOptions<N extends string = string> {
   /** Process signals that trigger `down()` (default `['SIGTERM', 'SIGINT']`); `false` to disable. */
   readonly signals?: readonly Signal[] | false;
   /** Call `process.exit(0)` after a **signal-triggered** shutdown completes (default `true`). Explicit `down()` never exits. */
   readonly exit?: boolean;
   /** Bound `up()` and `down()` each to this many milliseconds (0 / omitted = no timeout). */
   readonly timeout?: number;
-  /** Called when a component hook throws (shutdown is best-effort and continues). */
-  readonly onError?: (error: unknown, phase: Phase, name: string) => void;
+  /** Called when a component hook throws (shutdown is best-effort and continues); `'*'` names a `down()` timeout. */
+  readonly onError?: (error: unknown, phase: Phase, name: N | '*') => void;
   /** Override the process object signals attach to (defaults to the global `process`). */
   readonly process?: ProcessLike;
 }
 
-/** The lifecycle controller returned by {@link updown}. */
-export interface UpDown {
+/** The lifecycle controller returned by {@link updown}; `N` is its component names. */
+export interface UpDown<N extends string = string> {
   /** Register a component. Chainable. Throws after `up()` has started or on a duplicate name. */
-  register(component: Component): UpDown;
+  register(component: Component<N>): UpDown<N>;
   /** Start all components in dependency order. Idempotent (returns the same promise). Rejects if any `up` throws. */
   up(): Promise<void>;
   /** Run the pre then post shutdown phases in reverse-dependency order. Idempotent. Always resolves (best-effort). */
@@ -102,7 +108,7 @@ export interface UpDown {
   /** `true` once up completes and shutdown has not been requested. */
   isLive(): boolean;
   /** A snapshot of every registered component and its status. */
-  list(): ComponentStatus[];
+  list(): ComponentStatus<N>[];
 }
 
 const globalProcess = (): ProcessLike | undefined => (globalThis as { process?: ProcessLike }).process;
@@ -127,12 +133,13 @@ function withTimeout<T>(p: Promise<T>, ms: number | undefined): Promise<T | 'tim
 }
 
 /**
- * Create a lifecycle controller. See the {@link UpDown} methods.
+ * Create a lifecycle controller. See the {@link UpDown} methods. Pass the component names as `N`
+ * (`updown<'db' | 'http'>()`) to have every `name` and `deps` entry checked at compile time.
  */
-export function updown(opts: UpDownOptions = {}): UpDown {
-  const comps = new Map<string, Component>();
-  const status = new Map<string, Status>();
-  const errors = new Map<string, unknown>();
+export function updown<N extends string = string>(opts: UpDownOptions<N> = {}): UpDown<N> {
+  const comps = new Map<N, Component<N>>();
+  const status = new Map<N, Status>();
+  const errors = new Map<N, unknown>();
 
   let upPromise: Promise<void> | null = null;
   let downPromise: Promise<void> | null = null;
@@ -147,12 +154,12 @@ export function updown(opts: UpDownOptions = {}): UpDown {
     throw new Error(`updown: ${msg}`);
   };
 
-  const dependentsOf = (name: string) => [...comps.values()].filter((c) => (c.deps ?? []).includes(name)).map((c) => c.name);
+  const dependentsOf = (name: N): N[] => [...comps.values()].filter((c) => (c.deps ?? []).includes(name)).map((c) => c.name);
 
   function checkGraph(): void {
-    const visiting = new Set<string>();
-    const done = new Set<string>();
-    const visit = (n: string, trail: readonly string[]) => {
+    const visiting = new Set<N>();
+    const done = new Set<N>();
+    const visit = (n: N, trail: readonly N[]) => {
       if (done.has(n)) {return;}
       if (visiting.has(n)) {fail(`dependency cycle: ${[...trail, n].join(' → ')}`);}
       visiting.add(n);
@@ -183,8 +190,8 @@ export function updown(opts: UpDownOptions = {}): UpDown {
   }
 
   function startUpGraph(): Promise<void> {
-    const started = new Map<string, Promise<void>>();
-    const start = (name: string): Promise<void> => {
+    const started = new Map<N, Promise<void>>();
+    const start = (name: N): Promise<void> => {
       const existing = started.get(name);
       if (existing) {return existing;}
       const c = comps.get(name)!;
@@ -210,8 +217,8 @@ export function updown(opts: UpDownOptions = {}): UpDown {
 
   /** Run one shutdown phase in reverse-dependency order (dependents tear down before their deps). */
   async function runPhase(hook: 'pre' | 'post'): Promise<void> {
-    const done = new Map<string, Promise<void>>();
-    const run = (name: string): Promise<void> => {
+    const done = new Map<N, Promise<void>>();
+    const run = (name: N): Promise<void> => {
       const existing = done.get(name);
       if (existing) {return existing;}
       const c = comps.get(name)!;
@@ -239,7 +246,7 @@ export function updown(opts: UpDownOptions = {}): UpDown {
     await Promise.all([...comps.keys()].map(run));
   }
 
-  const api: UpDown = {
+  const api: UpDown<N> = {
     register(component) {
       if (upPromise) {fail(`cannot register "${component.name}" after up() has started`);}
       if (comps.has(component.name)) {fail(`duplicate component "${component.name}"`);}
@@ -294,7 +301,7 @@ export function updown(opts: UpDownOptions = {}): UpDown {
       return [...comps.values()].map((c) => {
         /* v8 ignore next */ // register() always seeds a status, so the ?? 'idle' fallback is unreachable
         const st = status.get(c.name) ?? 'idle';
-        const s: ComponentStatus = { name: c.name, deps: c.deps ?? [], status: st };
+        const s: ComponentStatus<N> = { name: c.name, deps: c.deps ?? [], status: st };
         return errors.has(c.name) ? { ...s, error: errors.get(c.name) } : s;
       });
     },
