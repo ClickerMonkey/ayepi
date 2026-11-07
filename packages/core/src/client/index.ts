@@ -27,4 +27,5 @@ export type { WsTransport, WsTransportOptions, WsState, BackoffOptions, Heartbea
 export { ApiError } from '../errors';
 export type { Manifest, ManifestEndpoint, ManifestEvent, HttpMethod } from '../manifest';
 export type { ClientData, CallOpts, CallArgs, CallReturn } from '../payload';
+export type { Serves } from '../served';
 export type { AnySpec } from '../endpoint';

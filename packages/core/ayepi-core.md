@@ -23,7 +23,7 @@ Node, Bun, Deno, Cloudflare Workers, and Lambda. Runtime adapters (`@ayepi/node`
 `@ayepi/bun`, `@ayepi/deno`) only add WebSocket-upgrade glue at the edge.
 
 ```sh
-pnpm add @ayepi/core zod      # zod is a peer dependency (^4)
+pnpm add @ayepi/core zod      # zod is a peer dependency (^4.6.7)
 ```
 
 ```ts
@@ -268,6 +268,9 @@ These are the primitives [`@ayepi/plugin`](../plugin) builds a hot-pluggable plu
 - **`ayepi-core-client.md`** — `client()`, `wsTransport()`, `sdk.call`/`url`/`on`, transport
   selection, typed item streams, events, opt-in validation, `ApiError`, the ws `$status`/
   `$error` frame protocol, and the zod-free `@ayepi/core/client` entry.
+- **`ayepi-core-peers.md`** — two-way calls on one socket: the connecting client serves a spec of
+  its own (`client({ serve })`) and the server calls it back through `peers(spec)` /
+  `server({ peers })`, with typed results, errors, item streams, cancellation and reconnect rules.
 - **`ayepi-core-types.md`** — how the painful typing works: `CheckCfg`, disjoint-kind
   proofs, payload inference (`ClientData`/`CallArgs`/`CallReturn`/`CallOpts`/
   `HandlerPayload`/`HandlerReturn`), multi-status unions, and the `Manifest` types.

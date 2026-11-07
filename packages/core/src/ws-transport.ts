@@ -26,14 +26,13 @@
  */
 
 import type { ClientWs } from './client';
+import { OpenCalls, REVERSE_ID, disconnectedFrame } from './ws-calls';
 
 /* ---- defaults ---- */
 /** Reconnect backoff defaults: 500ms → … → 30s, doubling, with jitter. */
 const DEFAULT_BACKOFF = { initial: 500, max: 30_000, factor: 2, jitter: true } as const;
 /** Heartbeat defaults: ping every 30s, expect a pong within 10s. */
 const DEFAULT_HEARTBEAT = { interval: 30_000, timeout: 10_000 } as const;
-/** Synthetic status for locally-failed calls (disconnected / never sent) — there is no HTTP response. */
-const DISCONNECTED_STATUS = 0;
 
 /** A message-ish event from a `WebSocket` (only `data` is read). */
 export interface WsMessageEvent {
@@ -139,7 +138,7 @@ export function wsTransport(url: string | (() => string), opts: WsTransportOptio
 
   const outbox: string[] = []; // frames buffered while connecting / queued while down
   const subs = new Map<string, string>(); // canonical sub key → original sub frame (replayed on reconnect)
-  const openCalls = new Set<string>(); // in-flight call ids awaiting a terminal frame
+  const openCalls = new OpenCalls(); // in-flight call ids awaiting a terminal frame
   const stateSubs = new Set<(s: WsState) => void>(); // onState() subscribers (in addition to opts.onStateChange)
 
   const setState = (s: WsState) => {
@@ -153,8 +152,7 @@ export function wsTransport(url: string | (() => string), opts: WsTransportOptio
 
   /** Synthesize disconnect errors so the client rejects in-flight pendings / fails item streams. */
   function failOpenCalls(): void {
-    for (const id of openCalls) {deliver(JSON.stringify({ id, $status: DISCONNECTED_STATUS, $code: 'DISCONNECTED', $error: 'connection closed' }));}
-    openCalls.clear();
+    openCalls.fail(deliver, 'connection closed');
   }
 
   function clearHeartbeat(): void {
@@ -189,9 +187,7 @@ export function wsTransport(url: string | (() => string), opts: WsTransportOptio
       return; // intercept heartbeat — never forwarded to the client
     }
     /* a call response carries `$status` (success or error); a stream ends with `end` — both are terminal */
-    if (f && typeof f.id === 'string' && ('$status' in f || f.end === true)) {
-      openCalls.delete(f.id);
-    }
+    if (f) {openCalls.settle(f);}
     deliver(raw);
   }
 
@@ -273,13 +269,14 @@ export function wsTransport(url: string | (() => string), opts: WsTransportOptio
       sock.send(frame);
       return;
     }
+    if (REVERSE_ID in f) {return;} // a frame of a call the server made belongs to the connection that dropped
     connect(); // lazy connect / kick a reconnect
     if (isSubCtl) {return;} // subscriptions replay from the subs map on open — don't double-queue
     if (!everConnected || policy === 'queue') {
       outbox.push(frame);
     } else if (typeof f.id === 'string') {
       // fail-fast: reject this call immediately rather than letting it hang
-      deliver(JSON.stringify({ id: f.id, $status: DISCONNECTED_STATUS, $code: 'DISCONNECTED', $error: 'not connected' }));
+      deliver(disconnectedFrame(f.id, 'not connected'));
     }
   }
 

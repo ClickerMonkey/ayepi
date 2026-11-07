@@ -60,6 +60,7 @@ describe('ayepi/client bundle', () => {
     const bytes = Buffer.byteLength(result.outputFiles[0]!.text);
     const gz = gzipSync(result.outputFiles[0]!.text).length;
     // a guardrail, not a target — bumps that balloon the client bundle should be deliberate
-    expect(gz, `client bundle: ${bytes}B raw / ${gz}B gzip`).toBeLessThan(8 * 1024);
+    // (9 KiB covers serving a spec back over the socket, `ClientOptions.serve`)
+    expect(gz, `client bundle: ${bytes}B raw / ${gz}B gzip`).toBeLessThan(9 * 1024);
   });
 });

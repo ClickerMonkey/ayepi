@@ -75,7 +75,16 @@ Commands: `npx tsc --noEmit` (must stay clean) · `npx tsx src/example.ts --run`
 { "id": "c1", "$status": 404, "$error": "Not Found", "$code": "NOT_FOUND", "data": <typed error body?> } // non-2xx → client throws ApiError
 { "id": "c1", "chunk": <item> } / { "id": "c1", "end": true }
 { "type": "<channel>", "params": { ... }, "data": { ... } }   // pushed event — no id
+
+// calls the server makes back over the connection (peers) — the same frames keyed `rid` instead of `id`
+{ "rid": "c1", "type": "/run", "method": "POST", "data": { ... } }   // server → client call (chunk/end/abort/sub likewise)
+{ "rid": "c1", "$status": 200, "data": <result> }                    // client → server reply (chunk/end likewise)
+{ "rid": null, "type": "<channel>", "params": { ... }, "data": { ... } } // client → server pushed event
 ```
+
+Each side numbers only its own calls (`id` for the client's, `rid` for the server's), so ids cannot collide.
+A client without `serve` answers a `rid` call `501 NOT_SERVED`; a server without `peers` answers a `rid`
+frame `400 BAD_FRAME`. See `packages/core/ayepi-core-peers.md`.
 
 The client throws an `ApiError` whenever `$status` is not 2xx (message ← `$error`/status text,
 code ← `$code` default `'ERROR'`, declared-error body in `data`) — mirroring HTTP. `wsTransport`

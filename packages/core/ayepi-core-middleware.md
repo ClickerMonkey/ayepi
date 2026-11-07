@@ -320,7 +320,7 @@ Then, for each request the server:
 4. The merged `ctx` spreads at the **root** of the handler payload (alongside `data`,
    `req`, `signal`, `emit`, etc.). A ctx key that collides with a reserved payload name
    (`data`, `stream`, `headers`, `cookies`, `out`, `download`, `length`, `fail`, `status`,
-   `header`, `cookie`, `req`, `signal`, `emit`) throws.
+   `header`, `cookie`, `req`, `signal`, `emit`, `conn`) throws.
 5. A middleware that returns **without** calling `next()` (and without returning a `Response`)
    throws "returned without calling next()".
 

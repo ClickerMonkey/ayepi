@@ -92,6 +92,8 @@ export type {
   UploadProgress,
   CallReturn,
   CallArgs,
+  PeerCallOpts,
+  PeerCallArgs,
   EmitArgs,
   EmitFn,
   HandlerPayload,
@@ -112,6 +114,12 @@ export { localBroker } from './broker';
 /* --- server --- */
 export type { Implementor, ServerOptions, Server, WsConn, CorsOptions, LocalClient, LocalCallOptions, MountHandle } from './server';
 export { implement, server, localClient } from './server';
+
+/* --- peers (two-way calls on one socket) --- */
+export { peers, Peers, peerHost } from './peer';
+export type { Peer, PeerKeys, PeersOptions, PeerHost, PeerSource, PeerListener } from './peer';
+export type { Serves } from './served';
+export { DISCONNECTED_STATUS, REVERSE_ID } from './ws-calls';
 
 /* --- docs UI --- */
 export type { DocsOptions } from './docs-ui';

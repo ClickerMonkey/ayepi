@@ -157,7 +157,9 @@ config:
 - `out` / `download()` / `length()` — only on **raw `streamOut`** endpoints (pipe target,
   dynamic filename, declared byte length for Range/`Content-Length`/`Accept-Ranges`/HEAD);
 - `headers` / `cookies` — only when declared (the parsed `z.output`);
-- `fail` — only when `errors` are declared (`FailFn`).
+- `fail` — only when `errors` are declared (`FailFn`);
+- `conn?: WsConn` — the WebSocket connection the call arrived on (absent over HTTP and for
+  in-process calls); `peers.of(conn)` is the caller's `Peer` (`ayepi-core-peers.md`).
 
 ```ts
 type FailFn<Errors> = <S extends keyof Errors & number>(
@@ -167,7 +169,14 @@ type FailFn<Errors> = <S extends keyof Errors & number>(
 
 Reserved root names (a middleware ctx key colliding with one throws at runtime): `data`,
 `stream`, `headers`, `cookies`, `out`, `download`, `length`, `fail`, `status`, `header`,
-`cookie`, `req`, `signal`, `emit`.
+`cookie`, `req`, `signal`, `emit`, `conn`.
+
+### `PeerCallArgs<E>` / `PeerCallOpts<E>`
+
+The arguments of a `Peer`'s `call`. `CallArgs<E>` and `PeerCallArgs<E>` share one positional-argument
+derivation and differ only in the options type: `PeerCallOpts<E>` is `{ signal? }` plus the `stream`
+a streaming-input endpoint requires, with no `transport`, `headers` or `onUploadProgress` (a peer call
+always travels over the socket). `PeerKeys<R>` is the endpoints of `R` that are not HTTP-only.
 
 ### `HandlerReturn<E>` — what a handler may return
 

@@ -59,6 +59,7 @@ Cross-cutting conventions, true across the whole library:
 | [`./ayepi-core-middleware.md`](./ayepi-core-middleware.md) | author middleware: `middleware()` defs, `requires`/`provides`/loaders, `use()`/`.group()`/`.endpoint()`, the `io` object, short-circuiting with a `Response`. |
 | [`./ayepi-core-types.md`](./ayepi-core-types.md) | understand or extend the precise generic/type surface (inference helpers, type-level behavior). |
 | [`./ayepi-core-client.md`](./ayepi-core-client.md) | the zod-free client entry: `sdk.call`/`on`/`url`, the manifest, and resilient `wsTransport`. |
+| [`./ayepi-core-peers.md`](./ayepi-core-peers.md) | call **both ways on one WebSocket**: the server calls back the client that connected (`peers`, `client({ serve })`), with typed results, errors, streams, cancellation and reconnects. |
 
 ### Run it on a runtime
 | Doc | Open it when you need to… |

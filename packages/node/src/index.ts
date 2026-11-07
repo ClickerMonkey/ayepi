@@ -43,8 +43,22 @@ export interface ServeOptions {
    * upgrades are accepted on any path.
    */
   readonly path?: string;
+  /** WebSocket liveness checks; see {@link UpgradeOptions.heartbeat}. */
+  readonly heartbeat?: number;
   /** Called once the server is listening. */
   readonly onListen?: (info: { port: number; hostname: string }) => void;
+}
+
+/** Options for {@link handleUpgrade}. */
+export interface UpgradeOptions {
+  /** When set, only upgrades on this pathname are accepted. */
+  readonly path?: string;
+  /**
+   * Send a WebSocket protocol ping on every connection this often (ms), and terminate a connection whose pong has
+   * not come back by the next ping. A peer that vanished without closing (a crash, a dropped network) is then
+   * closed within two intervals, so `app.ws.close` runs and its calls settle. Off when omitted.
+   */
+  readonly heartbeat?: number;
 }
 
 /** Build a fetch `Request` from a Node `IncomingMessage`, wiring an abort `signal`. */
@@ -153,14 +167,15 @@ export function createRequestListener(app: AnyApp): (req: http.IncomingMessage, 
  * Each upgraded socket becomes a {@link WsConn} via `app.ws.open`; inbound text
  * frames are forwarded to `app.ws.message`, and a socket close calls
  * `app.ws.close`. The upgrade `Request` (with its headers) is handed to
- * `app.ws.open`, so subscription guards can authenticate from it.
+ * `app.ws.open`, so subscription guards can authenticate from it; its `signal` aborts when the socket closes.
  *
- * @param app    - the ayepi app.
- * @param server - the HTTP server to listen for upgrades on.
- * @param path   - when set, only upgrades on this pathname are accepted.
+ * @param app     - the ayepi app.
+ * @param server  - the HTTP server to listen for upgrades on.
+ * @param options - a pathname to accept upgrades on, or {@link UpgradeOptions}.
  * @returns the underlying {@link WebSocketServer} (call `.close()` to stop).
  */
-export function handleUpgrade(app: AnyApp, server: http.Server, path?: string): WebSocketServer {
+export function handleUpgrade(app: AnyApp, server: http.Server, options?: string | UpgradeOptions): WebSocketServer {
+  const { path, heartbeat } = typeof options === 'string' ? { path: options, heartbeat: undefined } : (options ?? {});
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
     if (path !== undefined) {
@@ -171,18 +186,42 @@ export function handleUpgrade(app: AnyApp, server: http.Server, path?: string): 
       }
     }
     wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-      const request = toRequest(req, new AbortController().signal);
+      const closed = new AbortController();
+      const request = toRequest(req, closed.signal);
       const conn = app.ws.open((frame) => {
         if (ws.readyState === ws.OPEN) {ws.send(frame);}
       }, request);
+      const stopBeat = heartbeat === undefined ? () => {} : beat(ws, heartbeat);
+      const close = () => {
+        stopBeat();
+        closed.abort();
+        app.ws.close(conn);
+      };
       ws.on('message', (data: unknown) => {
         void app.ws.message(conn, String(data));
       });
-      ws.on('close', () => app.ws.close(conn));
-      ws.on('error', () => app.ws.close(conn));
+      ws.on('close', close);
+      ws.on('error', close);
     });
   });
   return wss;
+}
+
+/** Ping `ws` every `interval` ms and terminate it when a pong is missed. Returns the stop function. */
+function beat(ws: WebSocket, interval: number): () => void {
+  let alive = true;
+  ws.on('pong', () => {
+    alive = true;
+  });
+  const timer = setInterval(() => {
+    if (!alive) {
+      ws.terminate();
+      return;
+    }
+    alive = false;
+    ws.ping();
+  }, interval);
+  return () => clearInterval(timer);
 }
 
 /**
@@ -199,7 +238,7 @@ export function handleUpgrade(app: AnyApp, server: http.Server, path?: string): 
  */
 export function serve(app: AnyApp, opts: ServeOptions): () => Promise<void> {
   const server = http.createServer(createRequestListener(app));
-  const wss = handleUpgrade(app, server, opts.path);
+  const wss = handleUpgrade(app, server, { path: opts.path, heartbeat: opts.heartbeat });
   const hostname = opts.hostname ?? '0.0.0.0';
   server.listen(opts.port, hostname, () => {
     const addr = server.address();

@@ -22,7 +22,7 @@
 
 import type { AnyMiddleware, BoundMiddleware, ImplFor, MiddlewareIO, StackCtx, Json } from '@ayepi/core';
 import { memoryStore, rateLimitResponse, rateLimitHeaders, rateLimit as rateLimitDef, hitCost, DEFAULT_ALGORITHM, DEFAULT_PREFIX } from './index';
-import type { Algorithm, RateHit, RateKeyIO, RateLimitInfo, RateLimitResult, RateLimitRule, RateLimitStore } from './index';
+import type { Algorithm, RateKeyIO, RateLimitInfo, RateLimitResult, RateLimitRule, RateLimitStore } from './index';
 
 /** The `requires` chain of a middleware def. */
 type ReqOf<M extends AnyMiddleware> = M['__req'];
@@ -78,7 +78,7 @@ export interface RateLimitServerOptions<M extends AnyMiddleware> {
   readonly countRejected?: Dynamic<M, boolean>;
   /**
    * What a request costs against the limit — fixed, or per request (default 1). Weight requests to limit by tokens,
-   * bytes or money; see {@link RateHit.cost}.
+   * bytes or money (see `RateHit.cost` in `@ayepi/rate`).
    */
   readonly cost?: Dynamic<M, number>;
   /** Backend store (default an in-process memory store). */

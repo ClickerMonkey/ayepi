@@ -13,8 +13,12 @@ import { spec, endpoint, server, client } from '@ayepi/core'
 import { client } from '@ayepi/core/client' // zod-free browser entry
 ```
 
-`zod` is a **peer dependency** (`^4`). The `@ayepi/core/client` entry contains
-zero zod runtime code.
+`zod` is a **peer dependency** (`^4.6.7`). The `@ayepi/core/client` entry contains
+zero zod runtime code .
+
+**Two-way calls on one socket.** A client given `serve: server(otherSpec, [impl])` answers calls the
+server makes back over the same WebSocket; the server reaches each connection through `peers(otherSpec)`
+(typed results, errors, item streams, cancellation). See [`ayepi-core-peers.md`](./ayepi-core-peers.md).
 
 **Overload protection.** `server(api, [impl], { shed: { thresholdMs, sustainedMs, response } })`
 sheds load when the event loop falls behind — returning a response you choose (e.g. `503 Retry-After`)
@@ -83,6 +87,7 @@ This package ships dense, machine-oriented reference docs written for **AI codin
 - [`ayepi-core-client.md`](./ayepi-core-client.md)
 - [`ayepi-core-endpoints.md`](./ayepi-core-endpoints.md)
 - [`ayepi-core-middleware.md`](./ayepi-core-middleware.md)
+- [`ayepi-core-peers.md`](./ayepi-core-peers.md)
 - [`ayepi-core-types.md`](./ayepi-core-types.md)
 - [`ayepi-core.md`](./ayepi-core.md)
 

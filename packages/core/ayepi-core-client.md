@@ -41,6 +41,7 @@ interface ClientOptions {
   readonly headers?: Record<string,string> | (() => Record<string,string>)  // static or computed per request
   readonly fetchImpl?: (req: Request) => Promise<Response>     // override fetch (tests / in-memory)
   readonly ws?: ClientWs                                       // ws transport — required for ws calls + events
+  readonly serve?: Serves                                      // serve a spec back over the ws (two-way calls) — see ayepi-core-peers.md
   readonly prefer?: 'http' | 'ws'                              // preferred transport for dual endpoints (default 'http')
   readonly validate?: AnySpec                                  // opt-in: parse responses/items with their schemas
   readonly cache?: ClientCacheOptions                          // defaults for sdk.caller(...) caches (max/ttl/store) — see Callers
@@ -426,9 +427,20 @@ const sdk = client<typeof api>({
 })
 ```
 
+## Serving calls from the server (`serve`)
+
+Give the client `serve: server(otherSpec, [impl])` and the server can call `otherSpec` back over the
+same `ws` connection (`peers(otherSpec)` on the server side). Frames of those calls carry `rid` instead
+of `id`; the client runs them through the served server on one virtual connection that closes when the
+transport leaves `'open'`. Without `serve`, the server's calls are answered `501 NOT_SERVED`. The whole
+model, with the reconnect rules, is in `ayepi-core-peers.md`.
+
+`wsTransport` drops `rid` frames sent while disconnected (they belong to the connection that dropped)
+rather than queueing them or kicking a reconnect.
+
 ## Exported client symbols
 
-`client`, `wsTransport`, and the types `ApiClient`, `ClientOptions`, `ClientWs`,
+`client`, `wsTransport`, and the types `ApiClient`, `ClientOptions`, `ClientWs`, `Serves`,
 `GetUrlKeys`, `WsTransport`, `WsTransportOptions`, `WsState`, `BackoffOptions`,
 `HeartbeatOptions`, `WebSocketLike`, `WebSocketCtor`, `WsMessageEvent`. Plus `ApiError` /
 `reject` from errors, and the payload types in `ayepi-core-types.md` (incl. `UploadProgress`,

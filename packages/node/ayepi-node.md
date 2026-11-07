@@ -70,6 +70,8 @@ interface ServeOptions {
    * upgrades are accepted on any path.
    */
   readonly path?: string;
+  /** WebSocket liveness checks: ping every this many ms, terminate on a missed pong (off when omitted). */
+  readonly heartbeat?: number;
   /** Called once the server is listening. */
   readonly onListen?: (info: { port: number; hostname: string }) => void;
 }
@@ -80,6 +82,7 @@ interface ServeOptions {
 | `port`     | `number`                                              | yes      | —                    | Pass `0` to let the OS pick a free port; read the real port from `onListen`. |
 | `hostname` | `string`                                              | no       | `'0.0.0.0'`          | The interface to bind. `'127.0.0.1'` for localhost-only. |
 | `path`     | `string`                                              | no       | (any path)           | When set, only WebSocket upgrades on this exact pathname are accepted; others have their socket destroyed. Does **not** affect HTTP routing. |
+| `heartbeat` | `number` (ms)                                       | no       | (off)                | Send a WebSocket protocol ping on every connection this often; a connection whose pong has not come back by the next ping is terminated, so `app.ws.close` runs and its calls settle. Catches peers that vanished without closing. |
 | `onListen` | `(info: { port: number; hostname: string }) => void` | no       | —                    | Fires once the server is listening. `info.port` is the **actual** bound port (resolved from `server.address()`), which matters when `port: 0`. `info.hostname` echoes the bound hostname. |
 
 ### `createRequestListener(app)`
@@ -99,7 +102,7 @@ handlers receive. On a thrown error it responds `500` with
 `{ error: { code: 'INTERNAL', message } }` if headers haven't been sent yet,
 otherwise it just ends the (already-started) response.
 
-### `handleUpgrade(app, server, path?)`
+### `handleUpgrade(app, server, options?)`
 
 Attach an ayepi app's WebSocket handling to an existing `http.Server`'s
 `upgrade` event.
@@ -108,14 +111,22 @@ Attach an ayepi app's WebSocket handling to an existing `http.Server`'s
 function handleUpgrade(
   app: Server<AnySpec>,
   server: http.Server,
-  path?: string,
+  options?: string | UpgradeOptions,   // a string is the path
 ): WebSocketServer
+
+interface UpgradeOptions {
+  readonly path?: string;       // accept upgrades on this pathname only
+  readonly heartbeat?: number;  // ping interval (ms); terminate on a missed pong
+}
 ```
 
 - Creates a `WebSocketServer({ noServer: true })` and listens on the server's
   `'upgrade'` event.
 - `path` — when set, only upgrades whose pathname equals `path` are accepted;
   others have their socket destroyed.
+- `heartbeat` — see `ServeOptions.heartbeat`.
+- The upgrade `Request` handed to `app.ws.open` carries a `signal` that aborts when the
+  socket closes.
 - **Returns** the underlying `ws` `WebSocketServer` — call `.close()` to stop
   accepting upgrades.
 

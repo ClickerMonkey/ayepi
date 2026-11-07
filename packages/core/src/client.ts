@@ -24,6 +24,8 @@ import type { ClientData, CallArgs, CallReturn, CallOptsBase, UploadProgress } f
 import { splitPattern, buildParts } from './path';
 import { makeCaller, createCallerContext, type Caller, type CallerOptions, type CallerEndpoint, type ClientCacheOptions } from './caller';
 import { createConnectivity, type Connectivity, type ConnStatus } from './connectivity';
+import { ServedLink, refuseReverse, type Serves } from './served';
+import { REVERSE_ID, parseFrame } from './ws-calls';
 
 /** Response statuses that must carry a null body (the `Response` constructor rejects a body for these). */
 const NULL_BODY_STATUS = new Set([101, 204, 205, 304]);
@@ -85,10 +87,21 @@ function isSchema(v: unknown): v is z.ZodType {
  * read it off the value rather than importing the deriver, so a manifest-only bundle never
  * pulls in that (zod-bearing) code. A plain manifest has no such method and is used as-is.
  */
-function resolveManifest(src: Manifest | AnySpec): Manifest {
-  const stamped = src as unknown as Partial<Record<symbol, () => Manifest>>; // internal cast: a spec stamps its zod-free manifest builder under a global symbol
+export function resolveManifest(src: Manifest | AnySpec): Manifest {
+  const build = manifestBuilder(src);
+  return build ? build() : (src as Manifest); // internal cast: an unstamped source is a manifest
+}
+
+/** The spec itself when `src` is one (it carries the stamped manifest builder), else `undefined`. */
+export function specOf(src: Manifest | AnySpec): AnySpec | undefined {
+  return manifestBuilder(src) ? (src as AnySpec) : undefined; // internal cast: only spec() stamps the builder
+}
+
+/** The zod-free manifest builder `spec()` stamps under `Symbol.for('ayepi.manifest')`, if `src` has one. */
+function manifestBuilder(src: Manifest | AnySpec): (() => Manifest) | undefined {
+  const stamped = src as unknown as Partial<Record<symbol, unknown>>; // internal cast: a spec stamps its zod-free manifest builder under a global symbol
   const build = stamped[Symbol.for('ayepi.manifest')];
-  return typeof build === 'function' ? build() : (src as Manifest);
+  return typeof build === 'function' ? (build as () => Manifest) : undefined; // internal cast: the stamp is always the builder
 }
 
 /** A ws call response is successful when its reserved `$status` is in the 2xx range. */
@@ -158,6 +171,15 @@ export interface ClientOptions {
   readonly cache?: ClientCacheOptions;
   /** WebSocket transport; required for ws calls and event subscriptions. */
   readonly ws?: ClientWs;
+  /**
+   * Serve a spec of this side's own over the `ws` connection, so the server can call it back (two-way calls on one
+   * socket). Pass a {@link Server} assembled for that spec; it needs no listener. Every frame of a call the server
+   * makes is keyed `rid` and runs through that server's ws handler on one virtual connection, which opens on the
+   * first such frame and closes when the transport leaves `'open'` (aborting the calls it was serving). The virtual
+   * connection's `req` is a `GET` of `baseUrl`. Without `serve`, the server's calls are answered `501 NOT_SERVED`.
+   * The server side pairs this with {@link peers}.
+   */
+  readonly serve?: Serves;
   /** Preferred transport for dual endpoints (default `'http'`). */
   readonly prefer?: 'http' | 'ws';
   /**
@@ -284,8 +306,23 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
   };
   const canon = (v: unknown): string => JSON.stringify(v ?? {}, Object.keys((v as Record<string, unknown>) ?? {}).sort());
   if (opts.ws) {
-    opts.ws.onMessage((raw) => {
-      const frame = JSON.parse(raw) as Record<string, unknown>;
+    const ws = opts.ws;
+    const send = (frame: string) => ws.send(frame);
+    const served = opts.serve ? new ServedLink(opts.serve, send, () => new Request(new URL(opts.baseUrl, 'http://peer.invalid/'))) : null;
+    if (served) {
+      ws.onState?.((s) => {
+        if (s !== 'open') {served.drop();}
+      });
+    }
+    ws.onMessage((raw) => {
+      const frame = parseFrame(raw);
+      if (!frame) {return;}
+      if (REVERSE_ID in frame) {
+        /* a frame of a call the server is making on this side */
+        if (served) {served.receive(frame);}
+        else {refuseReverse(frame, send);}
+        return;
+      }
       if (typeof frame.id !== 'string') {
         /* no id: a pushed event — type is the channel */
         if (typeof frame.type === 'string') {

@@ -106,6 +106,20 @@ describe('wsTransport', () => {
     t.close();
   });
 
+  it('drops frames of server-made calls (keyed rid) while down instead of queueing or reconnecting', async () => {
+    const { transport, sdk } = makeClient({ whileDisconnected: 'queue', maxRetries: 0 });
+    await sdk.call('echo', { msg: 'up' }, { transport: 'ws' });
+    FakeWS.last!.drop();
+    const before = FakeWS.constructed;
+    transport.send(JSON.stringify({ rid: 'c1', $status: 200, data: {} }));
+    await tick();
+    expect(FakeWS.constructed).toBe(before); // no reconnect kicked
+    transport.connect();
+    await tick();
+    expect(transport.state).toBe('open');
+    transport.close();
+  });
+
   it('connects lazily (not before first use)', async () => {
     const before = FakeWS.constructed;
     const { transport } = makeClient();

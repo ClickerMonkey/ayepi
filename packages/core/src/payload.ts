@@ -18,6 +18,7 @@
 import type { z } from 'zod';
 import type { Simplify, EmptyObject, Get, MaybePromise } from './types';
 import type { AnyEndpoint, CookieOptions, EventConfig, AnySpec, EventsOf } from './endpoint';
+import type { WsConn } from './server';
 
 /** Input vs output side of a schema (request parsing vs response/handler view). */
 type IOMode = 'in' | 'out';
@@ -150,11 +151,21 @@ export interface CallOptsBase {
  */
 export type CallOpts<E extends AnyEndpoint> = CallOptsBase &
   (IsHttpOnly<E> extends true ? { readonly transport?: 'http' } : { readonly transport?: 'http' | 'ws' }) &
-  (HasRawStreamIn<E> extends true
-    ? { readonly stream: StreamBody }
-    : HasItemStreamIn<E> extends true
-      ? { readonly stream: AsyncIterable<z.input<InItemSchema<E>>> | (() => AsyncIterable<z.input<InItemSchema<E>>>) }
-      : EmptyObject);
+  StreamOpt<E>;
+
+/** The `stream` an endpoint's call requires: raw bytes for a raw `streamIn`, an item iterable for a typed one, else nothing. */
+type StreamOpt<E extends AnyEndpoint> = HasRawStreamIn<E> extends true
+  ? { readonly stream: StreamBody }
+  : HasItemStreamIn<E> extends true
+    ? { readonly stream: AsyncIterable<z.input<InItemSchema<E>>> | (() => AsyncIterable<z.input<InItemSchema<E>>>) }
+    : EmptyObject;
+
+/**
+ * The per-call options of a {@link Peer} call (a call the accepting side makes back over a connection). Peer calls
+ * always travel over the socket, so there is no `transport`, no headers and no upload progress: just the abort
+ * `signal` and, for streaming-input endpoints, the required `stream`.
+ */
+export type PeerCallOpts<E extends AnyEndpoint> = { readonly signal?: AbortSignal } & StreamOpt<E>;
 
 /** What `call()` resolves to: an async iterable for item streams, a `ReadableStream` for raw streams, a `{ status, data }` union for multi-status, the response, or `void`. */
 export type CallReturn<E extends AnyEndpoint> = HasItemStream<E> extends true
@@ -173,19 +184,25 @@ export type CallReturn<E extends AnyEndpoint> = HasItemStream<E> extends true
  * non-object body is a required positional value; everything else takes the
  * merged `data` (optional when every key is optional).
  */
-export type CallArgs<E extends AnyEndpoint> = HasStreamIn<E> extends true
+export type CallArgs<E extends AnyEndpoint> = ArgsWith<E, CallOpts<E>>;
+
+/** The positional arguments to a {@link Peer} `call(name, …)`: the same shape as {@link CallArgs}, with {@link PeerCallOpts}. */
+export type PeerCallArgs<E extends AnyEndpoint> = ArgsWith<E, PeerCallOpts<E>>;
+
+/** The positional-argument rules shared by every call surface, over the options type `O`. */
+type ArgsWith<E extends AnyEndpoint, O> = HasStreamIn<E> extends true
   ? [keyof ClientData<E>] extends [never]
-    ? [data: undefined, opts: CallOpts<E>]
+    ? [data: undefined, opts: O]
     : EmptyObject extends ClientData<E>
-      ? [data: ClientData<E> | undefined, opts: CallOpts<E>]
-      : [data: ClientData<E>, opts: CallOpts<E>]
+      ? [data: ClientData<E> | undefined, opts: O]
+      : [data: ClientData<E>, opts: O]
   : NonMergeableBody<E> extends true
-    ? [data: ClientData<E>, opts?: CallOpts<E>]
+    ? [data: ClientData<E>, opts?: O]
     : [keyof ClientData<E>] extends [never]
-      ? [opts?: CallOpts<E>]
+      ? [opts?: O]
       : EmptyObject extends ClientData<E>
-        ? [data?: ClientData<E>, opts?: CallOpts<E>]
-        : [data: ClientData<E>, opts?: CallOpts<E>];
+        ? [data?: ClientData<E>, opts?: O]
+        : [data: ClientData<E>, opts?: O];
 
 /* ---- handler payload ------------------------------------------------------ */
 type HandlerFlat<E extends AnyEndpoint> = Simplify<PShape<E, 'out'> & QShape<E, 'out'> & BFlat<E, 'out'> & FShape<E, 'out'>>;
@@ -235,6 +252,11 @@ export type HandlerPayload<S extends AnySpec, E extends AnyEndpoint> = Simplify<
       readonly req: Request;
       readonly signal: AbortSignal;
       readonly emit: EmitFn<S>;
+      /**
+       * The WebSocket connection the call arrived on; absent over HTTP and for in-process calls. With
+       * `server({ peers })`, `peers.of(conn)` is the caller's {@link Peer}, for calling it back.
+       */
+      readonly conn?: WsConn;
       /** Override the HTTP status (default 200/204/201…); HTTP transport only, before the first streamed byte. */
       readonly status: (code: number) => void;
       /** Set a response header; HTTP transport only, before the first streamed byte. */

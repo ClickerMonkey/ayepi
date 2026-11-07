@@ -464,3 +464,77 @@ describe('handleUpgrade path filtering', () => {
     wss.close();
   });
 });
+
+/* ---------- heartbeat + closing signal ---------- */
+
+/** A fake upgraded `ws` socket: records pings and terminations, emits events on demand. */
+function fakeWs(): EventEmitter & { pings: number; terminated: boolean; readyState: number; OPEN: number; ping(): void; terminate(): void; send(): void } {
+  const ws = new EventEmitter() as EventEmitter & { pings: number; terminated: boolean; readyState: number; OPEN: number; ping(): void; terminate(): void; send(): void };
+  ws.pings = 0;
+  ws.terminated = false;
+  ws.readyState = 1;
+  ws.OPEN = 1;
+  ws.ping = () => void ws.pings++;
+  ws.terminate = () => {
+    ws.terminated = true;
+    ws.emit('close');
+  };
+  ws.send = () => {};
+  return ws;
+}
+
+describe('handleUpgrade heartbeat and closing signal', () => {
+  function upgrade(options: Parameters<typeof handleUpgrade>[2]) {
+    const requests: Request[] = [];
+    const close = vi.fn();
+    const app = { ws: { open: (_send: unknown, req: Request) => (requests.push(req), { id: 1 }), message: vi.fn(), close } } as never;
+    const server = fakeServer();
+    const wss = handleUpgrade(app, server, options);
+    const ws = fakeWs();
+    vi.spyOn(wss, 'handleUpgrade').mockImplementation((_req, _socket, _head, cb) => (cb as (w: unknown) => void)(ws));
+    server.fireUpgrade(mockReq({ url: '/ws', host: 'h' }), fakeSocket(), Buffer.alloc(0));
+    return { ws, wss, close, request: () => requests[0]! };
+  }
+
+  it('pings every interval and terminates a socket that misses a pong', () => {
+    vi.useFakeTimers();
+    try {
+      const { ws, wss, close } = upgrade({ path: '/ws', heartbeat: 100 });
+      vi.advanceTimersByTime(100);
+      expect(ws.pings).toBe(1);
+      ws.emit('pong');
+      vi.advanceTimersByTime(100);
+      expect(ws.pings).toBe(2);
+      expect(ws.terminated).toBe(false);
+      vi.advanceTimersByTime(100); // no pong for the second ping
+      expect(ws.terminated).toBe(true);
+      expect(close).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(500); // the beat stopped with the socket
+      expect(ws.pings).toBe(2);
+      wss.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends no pings without a heartbeat, and aborts the upgrade request signal on close', () => {
+    vi.useFakeTimers();
+    try {
+      const { ws, wss, request } = upgrade('/ws');
+      vi.advanceTimersByTime(1000);
+      expect(ws.pings).toBe(0);
+      expect(request().signal.aborted).toBe(false);
+      ws.emit('error');
+      expect(request().signal.aborted).toBe(true);
+      wss.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('accepts an options object without a path', () => {
+    const { wss, request } = upgrade({});
+    expect(request().url).toBe('http://h/ws');
+    wss.close();
+  });
+});

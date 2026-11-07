@@ -35,6 +35,8 @@ import type { DocsOptions } from './docs-ui';
 import { normalizeDocs, swaggerHtml, redocHtml, asyncapiHtml } from './docs-ui';
 import type { LoadShedOptions } from './shed';
 import { createLoadShedder } from './shed';
+import { peerHost, type PeerSource } from './peer';
+import { REVERSE_ID, parseFrame, type WsFrame } from './ws-calls';
 
 /* ---- internal constants ---- */
 /** Readable-side highWaterMark for the `$out` transform: accept the first chunk before a reader attaches so headers can commit. */
@@ -201,6 +203,13 @@ export interface ServerOptions {
    * carries its own backpressure and ignores this.
    */
   readonly streamHighWaterMark?: number;
+  /**
+   * Call the connecting side back over each ws connection: pass the {@link peers} registry for the spec the
+   * connecting side serves (a {@link client} given `serve`). Every opened connection gets a typed {@link Peer};
+   * frames keyed `rid` are routed to it, and closing the connection settles its open calls. Without `peers`, a
+   * frame keyed `rid` is answered `BAD_FRAME`.
+   */
+  readonly peers?: PeerSource;
 }
 
 /** The assembled server: a fetch handler, a ws handler, the manifest, `emit`, and doc generators. */
@@ -622,7 +631,7 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
   /** root payload names owned by the framework — middleware ctx may not collide with them */
   const RESERVED_CTX = new Set([
     'data', 'stream', 'headers', 'cookies',
-    'out', 'download', 'length', 'fail', 'status', 'header', 'cookie', 'req', 'signal', 'emit',
+    'out', 'download', 'length', 'fail', 'status', 'header', 'cookie', 'req', 'signal', 'emit', 'conn',
   ]);
 
   function assemble(
@@ -633,6 +642,7 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
     signal: AbortSignal,
     streamCtl: StreamCtl | undefined,
     meta: ResponseMeta | undefined,
+    conn: WsConn | undefined,
   ): Bag {
     /* kinds are disjoint by construction — merge is lossless; a raw body IS the data */
     const data: unknown = e.bRaw ? kinds.b : { ...kinds.p, ...kinds.q, ...(e.b !== null ? (kinds.b as Bag) : {}), ...kinds.f };
@@ -665,6 +675,7 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
     payload.req = req;
     payload.signal = signal;
     payload.emit = emit;
+    if (conn) {payload.conn = conn;}
     return payload;
   }
 
@@ -731,7 +742,7 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
       let ck: Bag | undefined;
       if (c.cookies) {ck = c.cookies.parse(parseCookieHeader(req.headers.get('cookie'))) as Bag;}
       const handler = table.get(e.name)! as unknown as (payload: Bag) => unknown; // internal cast: erased handler signature
-      const payload = assemble(e, ctx, { p, q, b, f: rawFiles ? f : {}, stream, h, ck }, req, signal ?? req.signal, streamCtl, meta);
+      const payload = assemble(e, ctx, { p, q, b, f: rawFiles ? f : {}, stream, h, ck }, req, signal ?? req.signal, streamCtl, meta, chainCtx.ws?.conn);
       const result = await handler(payload);
       if (c.streamOut) {return result;}
       if (c.responses) {
@@ -1238,15 +1249,18 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
     conn.send(JSON.stringify({ id, $status: res.status, $code: 'SHORT_CIRCUIT', $error: typeof data === 'string' ? data : undefined, data: data as Json }));
   }
 
+  /* the registry of peers — the calls this server makes back over each connection */
+  const host = options?.peers?.[peerHost];
+
   const wsApi = {
     open(send: (frame: string) => void, req: Request): WsConn {
-      return { id: ++connSeq, req, send, subs: new Set(), streams: new Map(), calls: new Map() };
+      const conn: WsConn = { id: ++connSeq, req, send, subs: new Set(), streams: new Map(), calls: new Map() };
+      host?.attach(conn);
+      return conn;
     },
     async message(conn: WsConn, raw: string): Promise<void> {
-      let frame: Bag;
-      try {
-        frame = JSON.parse(raw) as Bag;
-      } catch {
+      const frame: WsFrame | null = parseFrame(raw);
+      if (!frame) {
         conn.send(JSON.stringify({ $status: 400, $code: 'BAD_FRAME', $error: 'bad frame' }));
         return;
       }
@@ -1265,6 +1279,12 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
         conn.send(JSON.stringify(out));
       };
       try {
+        if (REVERSE_ID in frame) {
+          /* part of a call this server made on the connection: the peer settles it */
+          if (!host) {throw reject(400, 'BAD_FRAME', 'this server makes no calls over the socket');}
+          host.receive(conn, frame);
+          return;
+        }
         if (frame.ping === true) {
           /* heartbeat (forward-compatible extension): answer liveness probes */
           conn.send(JSON.stringify({ pong: true }));
@@ -1365,6 +1385,7 @@ export function server<S extends AnySpec, const H extends readonly { readonly __
       conn.calls.clear();
       for (const s of conn.streams.values()) {s.fail(new ApiError(ABORTED_STATUS, 'ABORTED'));}
       conn.streams.clear();
+      host?.detach(conn);
     },
   };
 
