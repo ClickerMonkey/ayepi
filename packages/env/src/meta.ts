@@ -39,5 +39,5 @@ export function varsOf(schema: z.ZodType, key: string): readonly string[] {
 
 /** Attach aliasing metadata: read `schema` from the first present of `keys`. */
 export function alias<S extends z.ZodType>(schema: S, ...keys: string[]): S {
-  return (schema as unknown as { meta: (m: EnvMeta) => S }).meta({ vars: keys });
+  return (schema as unknown as { meta: (m: EnvMeta) => S }).meta({ vars: keys }); // internal cast: EnvMeta is not part of zod GlobalMeta, and .meta returns the same schema
 }

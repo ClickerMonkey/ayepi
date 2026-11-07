@@ -31,7 +31,7 @@ import { EnvError, customIssue, defaultSource, errMessage, keyed, resolveRaw, ty
 import { changed, isZodType } from './util';
 
 /** A field definition: a zod schema, or a factory taking the inherited (earlier-group) values. */
-export type EnvFieldDef<Inherited> = z.ZodType | ((inherited: Inherited) => z.ZodType | any);
+export type EnvFieldDef<Inherited> = z.ZodType | ((inherited: Inherited) => unknown);
 
 /** The fields passed to {@link env} / {@link Env.add}. `Inherited` is the type resolved so far. */
 export type EnvInput<Inherited> = Record<string, EnvFieldDef<Inherited>>;
@@ -161,12 +161,11 @@ class EnvImpl {
   /** A proxy over fields from groups *earlier* than `group`, recording which keys a factory reads. */
   private inheritedFor(group: number): { proxy: Record<string, unknown>; reads: Set<string> } {
     const reads = new Set<string>();
-    const self = this;
-    const visible = (prop: string | symbol): prop is string => typeof prop === 'string' && (self.defs.get(prop)?.group ?? Infinity) < group;
+    const visible = (prop: string | symbol): prop is string => typeof prop === 'string' && (this.defs.get(prop)?.group ?? Infinity) < group;
     const proxy = new Proxy(Object.create(null) as Record<string, unknown>, {
-      get: (_t, prop) => (visible(prop) ? (reads.add(prop), self.resolve(prop)) : undefined),
+      get: (_t, prop) => (visible(prop) ? (reads.add(prop), this.resolve(prop)) : undefined),
       has: (_t, prop) => visible(prop),
-      ownKeys: () => [...self.defs.values()].filter((f) => f.group < group).map((f) => f.key),
+      ownKeys: () => [...this.defs.values()].filter((f) => f.group < group).map((f) => f.key),
       getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }),
     });
     return { proxy, reads };
@@ -244,11 +243,11 @@ class EnvImpl {
   }
 
   with(fn: (env: Env<Record<string, unknown>>) => void): void {
-    fn(this as unknown as Env<Record<string, unknown>>);
+    fn(this as unknown as Env<Record<string, unknown>>); // internal cast: the one impl class serves every typed view; fields resolve by key at runtime
   }
 
   map<R>(fn: (env: Env<Record<string, unknown>>) => R): R {
-    return fn(this as unknown as Env<Record<string, unknown>>);
+    return fn(this as unknown as Env<Record<string, unknown>>); // internal cast: the one impl class serves every typed view; fields resolve by key at runtime
   }
 
   on(arg1: unknown, arg2?: unknown, arg3?: unknown): () => void {
@@ -372,5 +371,5 @@ class EnvImpl {
 
 /** Build a typed, lazy, reactive config from a record of fields. Reads `process.env` by default. */
 export function env<const T extends EnvInput<{}>>(input: T, options?: EnvOptions): Env<EnvOutput<{}, T>> {
-  return new EnvImpl(input as Record<string, EnvFieldDef<unknown>>, options) as unknown as Env<EnvOutput<{}, T>>;
+  return new EnvImpl(input as Record<string, EnvFieldDef<unknown>>, options) as unknown as Env<EnvOutput<{}, T>>; // internal cast: the output type is computed from `input` at compile time
 }

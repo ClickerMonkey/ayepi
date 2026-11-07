@@ -23,7 +23,7 @@ import { EnvError, customIssue, defaultSource, errMessage, keyed, resolveRaw, ty
 import { changed, isZodType } from './util';
 
 /** A field for {@link asyncEnv}: zod schema, dynamic binding, or a (possibly async) factory. */
-export type AsyncEnvFieldDef<Inherited> = z.ZodType | DynamicBinding<any> | ((inherited: Inherited) => MaybePromise<z.ZodType | any>);
+export type AsyncEnvFieldDef<Inherited> = z.ZodType | DynamicBinding<unknown> | ((inherited: Inherited) => unknown);
 
 /** The fields passed to {@link asyncEnv} / {@link AsyncEnv.add}. */
 export type AsyncEnvInput<Inherited> = Record<string, AsyncEnvFieldDef<Inherited>>;
@@ -234,11 +234,11 @@ class AsyncEnvImpl {
   }
 
   with(fn: (env: AsyncEnv<Record<string, unknown>>) => void): void {
-    fn(this as unknown as AsyncEnv<Record<string, unknown>>);
+    fn(this as unknown as AsyncEnv<Record<string, unknown>>); // internal cast: the one impl class serves every typed view; fields resolve by key at runtime
   }
 
   map<R>(fn: (env: AsyncEnv<Record<string, unknown>>) => R): R {
-    return fn(this as unknown as AsyncEnv<Record<string, unknown>>);
+    return fn(this as unknown as AsyncEnv<Record<string, unknown>>); // internal cast: the one impl class serves every typed view; fields resolve by key at runtime
   }
 
   async refresh(key?: string): Promise<void> {
@@ -384,5 +384,5 @@ class AsyncEnvImpl {
 
 /** Build a typed, lazy, reactive **async** config — supports async factories and live providers. */
 export function asyncEnv<const T extends AsyncEnvInput<{}>>(input: T, options?: EnvOptions): AsyncEnv<AsyncEnvOutput<{}, T>> {
-  return new AsyncEnvImpl(input as Record<string, AsyncEnvFieldDef<unknown>>, options) as unknown as AsyncEnv<AsyncEnvOutput<{}, T>>;
+  return new AsyncEnvImpl(input as Record<string, AsyncEnvFieldDef<unknown>>, options) as unknown as AsyncEnv<AsyncEnvOutput<{}, T>>; // internal cast: the output type is computed from `input` at compile time
 }
