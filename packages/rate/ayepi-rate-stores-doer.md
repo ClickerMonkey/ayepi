@@ -30,15 +30,20 @@ interface RateLimitRule {
 }
 
 interface RateLimitStore {
-  /** Record a hit for `key` under `rule` at time `now` (ms) and return the decision. */
-  consume(key: string, rule: RateLimitRule, now: number): MaybePromise<RateLimitResult>;
+  /**
+   * Record a hit of weight `cost` for `key` under `rule` at time `now` (ms) and return the decision.
+   * Allowed when the window's total plus `cost` stays within `rule.limit` (token-bucket: the bucket holds
+   * `cost` tokens). A cost of 0 records nothing and reports the current state.
+   */
+  consume(key: string, rule: RateLimitRule, now: number, cost: number): MaybePromise<RateLimitResult>;
   /** Clear all state for `key` (optional). */
   reset?(key: string): MaybePromise<void>;
 }
 ```
 
-A custom store should honor `rule.countRejected`: when it is falsy (the default), a request
-the store **rejects** must not consume budget (don't persist its increment). The bundled
+A custom store should honor `cost` and `rule.countRejected`: a hit adds `cost` (not 1) to the
+window, and when `countRejected` is falsy (the default), a hit the store **rejects** must not
+consume budget (don't persist its increment). The bundled
 `memoryStore` and `redisStore` both do this; `token-bucket` is naturally exempt (it never
 charges a request it can't admit).
 
@@ -157,6 +162,7 @@ interface RateTaskOptions extends DoerTaskOptions {
   readonly groupLimit?: number;      // overrides the configured default; enables the group gate for this task
   readonly groupWindow?: number;     // default: the global `window`
   readonly groupAlgorithm?: Algorithm; // default: the global `algorithm`
+  readonly cost?: number;            // weight against both gates (default 1)
 }
 
 /** A Doer whose `do` accepts RateTaskOptions (assignable to Doer). */
@@ -329,7 +335,8 @@ was rejected).
 ### Store consultation
 
 `limiter()` builds a `RateLimitRule` from `{ limit, window, algorithm }`, prepends
-`prefix` (default `'rl:'`) to the key, and calls `store.consume(prefixedKey, rule, now)`.
+`prefix` (default `'rl:'`) to the key, and calls `store.consume(prefixedKey, rule, now, cost)`
+(`cost` from `check(key, { cost })`, default 1; a negative or non-finite cost throws a `RangeError`).
 The store records the hit and returns `{ allowed, limit, remaining, reset, retryAfter }`.
 The limiter is stateless beyond its rule + store reference — all per-key state lives in the
 store, which is why a distributed store gives a distributed limit.
@@ -340,7 +347,8 @@ store, which is why a distributed store gives a distributed limit.
 
 1. builds `kio = { req, ctx }`;
 2. if `skip(kio)` → calls `io.next({ ratelimit: <full budget> })` (admit, no store hit);
-3. otherwise `await limiter.check(key(kio))`;
+3. otherwise resolves `cost` (default 1) and `await store.consume(prefix + key(kio), rule, now, cost)`
+   (a bad cost throws before the store is consulted, so `failOpen` never hides it);
 4. if **not** allowed → returns `rateLimitResponse(info, { status, headers, message })` —
    a `Response`, which `@ayepi/core` treats as a **short-circuit**: the rest of the chain
    and the handler are skipped (HTTP sends the `Response`; ws turns it into an error
@@ -361,7 +369,7 @@ every task that clears its gates, skipping (not blocking on) group-capped ones:
 - for the oldest not-yet-skipped task, it checks the **group gate first** (when a `group` + group
   limit apply): a denied group check consumes nothing, so the task is **skipped** (left pending) and
   the scan continues to other groups — recording that group's `retryAfter`;
-- then the **global gate** (`limiter.check(key, now)`): if denied, the shared bucket is out, so no
+- then the **global gate** (`limiter.check(key, { now, cost })`): if denied, the shared bucket is out, so no
   further task can be admitted this round and the scan stops (recording the global `retryAfter`);
 - if both allow, it removes the task and calls `inner.do(task.run, task.opts)`.
 

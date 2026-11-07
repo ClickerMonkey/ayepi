@@ -109,7 +109,10 @@ Everything below is exported. `@internal` symbols are intentionally omitted.
 | `RateLimitDefOptions` | interface | Options for the `rateLimit` def (`name`/`requires`). |
 | `RateLimitedDoerOptions` | interface | Options for `rateLimitedDoer` (global + group limits, backlog watch). |
 | `RateLimitedDoer` | interface | The doer `rateLimitedDoer` returns (a `Doer` whose `do` takes `RateTaskOptions`). |
-| `RateTaskOptions` | interface | Per-task options — `DoerTaskOptions` + `groupLimit`/`groupWindow`/`groupAlgorithm`. |
+| `RateTaskOptions` | interface | Per-task options — `DoerTaskOptions` + `groupLimit`/`groupWindow`/`groupAlgorithm`/`cost`. |
+| `RateHit` | interface | One hit for `limiter.check`: `{ now?, cost? }`. |
+| `hitCost` | function | Validate a hit's cost (default 1); throws `RangeError` when negative or non-finite. |
+| `DEFAULT_COST` | const | `1` — what a hit costs when no cost is given. |
 | `RateLimitedBacklogInfo` | interface | `{ pending, nonEmptyForMs }` passed to the doer's `onBacklog`. |
 | `MemoryStoreOptions` | interface | `{ sweepEvery?, idleMs? }` — tune `memoryStore` eviction. |
 | `Limiter` | interface | The object `limiter()` returns. |
@@ -190,6 +193,8 @@ interface RateLimitServerOptions<M extends AnyMiddleware> {
   readonly algorithm?: Dynamic<M, Algorithm>;
   /** Count rejected (over-limit) requests against the limit (default `false`) — fixed, or per request. */
   readonly countRejected?: Dynamic<M, boolean>;
+  /** What a request costs against the limit (default 1) — fixed, or per request. See "Weighted hits". */
+  readonly cost?: Dynamic<M, number>;
   /** Backend store (default an in-process `memoryStore`). */
   readonly store?: RateLimitStore;
   /** Key prefix/namespace (default `'rl:'`). */
@@ -395,8 +400,8 @@ plain handler, a worker, a CLI, or another framework.
 function limiter(opts: LimiterOptions): Limiter
 
 interface Limiter {
-  /** Record a hit for `key` (at `now`, default `Date.now()`) and return the decision. */
-  check(key: string, now?: number): MaybePromise<RateLimitResult>;
+  /** Record a hit for `key` and return the decision. */
+  check(key: string, hit?: RateHit): MaybePromise<RateLimitResult>;
   /** Clear all state for `key`. */
   reset(key: string): MaybePromise<void>;
   /** The rule this limiter enforces. */
@@ -419,6 +424,32 @@ await lim.reset(userId) // clear a key
 
 `check` may return a value or a promise depending on the store (`memoryStore` is sync,
 `redisStore` is async) — `await` it to handle both.
+
+### Weighted hits
+
+A hit can weigh more (or less) than one request, so a limit can count LLM tokens, bytes or money
+instead of calls. The limit and the costs share one unit; for money use whole small units such as
+micro-dollars so totals stay exact.
+
+```ts
+interface RateHit {
+  readonly now?: number;  // when (ms; default Date.now())
+  readonly cost?: number; // weight in the limit's units (default 1); 0 = report the state, record nothing
+}
+
+const spend = limiter({ limit: 5_000_000, window: 86_400_000 }) // 5 dollars a day, in micro-dollars
+const { allowed, remaining } = await spend.check(userId, { cost: 12_500 })
+```
+
+- A hit is allowed when the window's total plus its cost fits the limit (token-bucket: when the
+  bucket holds that many tokens); a refused hit records nothing unless `countRejected` is set.
+- A cost above the limit is never allowed. A negative or non-finite cost throws a `RangeError`
+  (`hitCost(cost)` is the check, exported).
+- `remaining` is exact for `fixed-window` and whole units (rounded down) for `sliding-window` and
+  `token-bucket`.
+- The middleware takes `cost` (fixed or `(io) => number`), and `rateLimitedDoer` takes a per-task
+  `cost` that counts against both its global and its group limit (`ayepi-rate-stores-doer.md`).
+- `memoryStore` and `redisStore` both support fractional costs (Redis via `INCRBYFLOAT`).
 
 ### `rateLimitResponse`
 

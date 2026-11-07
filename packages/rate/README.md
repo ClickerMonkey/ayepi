@@ -74,7 +74,7 @@ if (!allowed) {
 await lim.reset(userId) // clear a key
 ```
 
-- `limiter(opts)` → `{ check(key, now?), reset(key), rule }` — the actual limiting
+- `limiter(opts)` → `{ check(key, { now?, cost? }?), reset(key), rule }` — the actual limiting
   (pluggable store + algorithm), no HTTP involved.
 - `rateLimitResponse(info, opts?)` → a `Response` (status/message/headers), if you
   want one.

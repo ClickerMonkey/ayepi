@@ -44,8 +44,8 @@ const DEFAULT_STATUS = 429;
 export const DEFAULT_PREFIX = 'rl:';
 /** Default algorithm. */
 export const DEFAULT_ALGORITHM: Algorithm = 'fixed-window';
-/** Tokens consumed per request (token-bucket). */
-const TOKEN_COST = 1;
+/** What one hit costs when no cost is given: one request. */
+export const DEFAULT_COST = 1;
 /** Milliseconds per second — `Retry-After` / `RateLimit-Reset` are expressed in seconds. */
 const MS_PER_SECOND = 1000;
 /** Amortized cleanup: sweep expired in-memory entries once every this many `consume` calls. */
@@ -58,9 +58,12 @@ export type Algorithm = 'fixed-window' | 'sliding-window' | 'token-bucket';
 
 /** Limiter state for one key, exposed to handlers (via `ctx.ratelimit`) and response headers. */
 export interface RateLimitInfo {
-  /** The configured request limit for the window. */
+  /** The configured limit for the window, in cost units (requests by default). */
   readonly limit: number;
-  /** Requests (or tokens) remaining before the limit is hit. */
+  /**
+   * Cost units remaining before the limit is hit. Whole units for `sliding-window` and `token-bucket` (rounded down);
+   * exact for `fixed-window`.
+   */
   readonly remaining: number;
   /** Milliseconds until the window/bucket resets. */
   readonly reset: number;
@@ -95,8 +98,12 @@ export interface RateLimitRule {
  * (the in-memory store is single-process; `@ayepi/rate/redis` is distributed).
  */
 export interface RateLimitStore {
-  /** Record a hit for `key` under `rule` at time `now` (ms) and return the decision. */
-  consume(key: string, rule: RateLimitRule, now: number): MaybePromise<RateLimitResult>;
+  /**
+   * Record a hit of weight `cost` for `key` under `rule` at time `now` (ms) and return the decision. The hit is
+   * allowed when the window's total plus `cost` stays within `rule.limit` (for `token-bucket`: when the bucket
+   * holds `cost` tokens). A cost of `0` records nothing and reports the current state.
+   */
+  consume(key: string, rule: RateLimitRule, now: number, cost: number): MaybePromise<RateLimitResult>;
   /** Clear all state for `key` (optional). */
   reset?(key: string): MaybePromise<void>;
 }
@@ -153,10 +160,29 @@ export interface RateLimitDefOptions<R extends readonly AnyMiddleware[]> {
   readonly name?: string;
 }
 
+/** One hit against a {@link Limiter}. */
+export interface RateHit {
+  /** When the hit happens (ms; default `Date.now()`). */
+  readonly now?: number;
+  /**
+   * The hit's weight in the limit's units (default {@link DEFAULT_COST}, one request). Weight hits to make a limit
+   * count tokens, bytes or money instead of calls; for money, use whole small units (e.g. micro-dollars) so totals
+   * stay exact. `0` reports the current state without recording anything. A cost above the limit is never allowed.
+   */
+  readonly cost?: number;
+}
+
+/** The cost of a hit: `cost` or {@link DEFAULT_COST}. Throws a `RangeError` for a negative or non-finite cost. */
+export function hitCost(cost: number | undefined): number {
+  const c = cost ?? DEFAULT_COST;
+  if (!Number.isFinite(c) || c < 0) {throw new RangeError(`rate-limit cost must be a finite number >= 0, got ${c}`);}
+  return c;
+}
+
 /** A reusable rate limiter bound to a rule + store — usable anywhere, not just middleware. */
 export interface Limiter {
-  /** Record a hit for `key` (at `now`, default `Date.now()`) and return the decision. */
-  check(key: string, now?: number): MaybePromise<RateLimitResult>;
+  /** Record a hit for `key` (see {@link RateHit}: when, and how much it costs) and return the decision. */
+  check(key: string, hit?: RateHit): MaybePromise<RateLimitResult>;
   /** Clear all state for `key`. */
   reset(key: string): MaybePromise<void>;
   /** The rule this limiter enforces. */
@@ -172,6 +198,10 @@ export interface Limiter {
  * const lim = limiter({ limit: 100, window: 60_000, algorithm: 'token-bucket' })
  * const { allowed, retryAfter } = await lim.check(userId)
  * if (!allowed) throw reject(429, 'RATE_LIMITED', `retry in ${retryAfter}ms`)
+ *
+ * // a budget: 5 dollars a day, counted in micro-dollars
+ * const spend = limiter({ limit: 5_000_000, window: 86_400_000 })
+ * const { allowed: affordable } = await spend.check(userId, { cost: 12_500 })
  * ```
  */
 export function limiter(opts: LimiterOptions): Limiter {
@@ -185,7 +215,7 @@ export function limiter(opts: LimiterOptions): Limiter {
   const prefix = opts.prefix ?? DEFAULT_PREFIX;
   return {
     rule,
-    check: (key, now) => store.consume(prefix + key, rule, now ?? Date.now()),
+    check: (key, hit) => store.consume(prefix + key, rule, hit?.now ?? Date.now(), hitCost(hit?.cost)),
     reset: (key) => Promise.resolve(store.reset?.(prefix + key)),
   };
 }
@@ -273,6 +303,11 @@ export interface RateTaskOptions extends DoerTaskOptions {
   readonly groupWindow?: number;
   /** Algorithm for the group limit (default: the global `algorithm`). */
   readonly groupAlgorithm?: Algorithm;
+  /**
+   * The task's weight against both the global and the group limit (default {@link DEFAULT_COST}). A task waits
+   * until both limits have room for its whole cost; see {@link RateHit.cost}.
+   */
+  readonly cost?: number;
 }
 
 /** A {@link Doer} whose `do` accepts {@link RateTaskOptions} — i.e. a per-task group limit. */
@@ -468,7 +503,7 @@ export function rateLimitedDoer(opts: RateLimitedDoerOptions): RateLimitedDoer {
         if (groupRule && gk !== undefined) {
           let gr;
           try {
-            gr = await groupStore.consume(groupPrefix + gk, groupRule, now());
+            gr = await groupStore.consume(groupPrefix + gk, groupRule, now(), hitCost(o?.cost));
           } catch (err) {
             report(err);
             soonest = Math.min(soonest, floor); // group-store hiccup — back off the whole round
@@ -483,7 +518,7 @@ export function rateLimitedDoer(opts: RateLimitedDoerOptions): RateLimitedDoer {
         // global gate (shared) — if it's out, no further task can be admitted this round
         let res;
         try {
-          res = await lim.check(keyOf(o), now());
+          res = await lim.check(keyOf(o), { now: now(), cost: o?.cost });
         } catch (err) {
           report(err);
           soonest = Math.min(soonest, floor);
@@ -528,19 +563,19 @@ interface Bucket {
   ts: number;
 }
 
-function fixedWindow(counters: Map<string, Counter>, key: string, rule: RateLimitRule, now: number): RateLimitResult {
+function fixedWindow(counters: Map<string, Counter>, key: string, rule: RateLimitRule, now: number, cost: number): RateLimitResult {
   let e = counters.get(key);
   if (!e || e.reset <= now) {
     e = { count: 0, reset: now + rule.window };
     counters.set(key, e);
   }
-  const allowed = e.count < rule.limit;
-  if (allowed || rule.countRejected) {e.count++;} // by default a rejected hit doesn't consume budget
+  const allowed = e.count + cost <= rule.limit;
+  if (allowed || rule.countRejected) {e.count += cost;} // by default a rejected hit doesn't consume budget
   const reset = e.reset - now;
   return { allowed, limit: rule.limit, remaining: Math.max(0, rule.limit - e.count), reset, retryAfter: allowed ? 0 : reset };
 }
 
-function slidingWindow(counters: Map<string, Counter>, key: string, rule: RateLimitRule, now: number): RateLimitResult {
+function slidingWindow(counters: Map<string, Counter>, key: string, rule: RateLimitRule, now: number, cost: number): RateLimitResult {
   const windowStart = Math.floor(now / rule.window) * rule.window;
   const curKey = `${key}|${windowStart}`;
   const prevKey = `${key}|${windowStart - rule.window}`;
@@ -552,22 +587,21 @@ function slidingWindow(counters: Map<string, Counter>, key: string, rule: RateLi
   // prevKey already encodes the immediately-previous window, so its count always applies
   const prevCount = counters.get(prevKey)?.count ?? 0;
   const weight = (rule.window - (now - windowStart)) / rule.window;
-  // would admitting this request stay within the limit?
-  const allowed = prevCount * weight + cur.count + 1 <= rule.limit;
-  if (allowed || rule.countRejected) {cur.count++;} // by default a rejected hit doesn't carry into the next window
+  // would admitting this hit stay within the limit?
+  const allowed = prevCount * weight + cur.count + cost <= rule.limit;
+  if (allowed || rule.countRejected) {cur.count += cost;} // by default a rejected hit doesn't carry into the next window
   const weighted = prevCount * weight + cur.count;
   const reset = windowStart + rule.window - now;
   return { allowed, limit: rule.limit, remaining: Math.max(0, Math.floor(rule.limit - weighted)), reset, retryAfter: allowed ? 0 : reset };
 }
 
-function tokenBucket(buckets: Map<string, Bucket>, key: string, rule: RateLimitRule, now: number): RateLimitResult {
+function tokenBucket(buckets: Map<string, Bucket>, key: string, rule: RateLimitRule, now: number, cost: number): RateLimitResult {
   const cap = rule.limit;
   const refillPerMs = rule.limit / rule.window;
   let b = buckets.get(key);
   if (!b) {b = { tokens: cap, ts: now };}
   b.tokens = Math.min(cap, b.tokens + (now - b.ts) * refillPerMs);
   b.ts = now;
-  const cost = TOKEN_COST;
   let allowed = false;
   if (b.tokens >= cost) {
     b.tokens -= cost;
@@ -619,15 +653,15 @@ export function memoryStore(opts: MemoryStoreOptions = {}): RateLimitStore {
     for (const [k, b] of buckets) {if (now - b.ts > idleMs) {buckets.delete(k);}}
   };
   return {
-    consume(key, rule, now) {
+    consume(key, rule, now, cost) {
       sweep(now);
       switch (rule.algorithm) {
         case 'sliding-window':
-          return slidingWindow(counters, key, rule, now);
+          return slidingWindow(counters, key, rule, now, cost);
         case 'token-bucket':
-          return tokenBucket(buckets, key, rule, now);
+          return tokenBucket(buckets, key, rule, now, cost);
         default:
-          return fixedWindow(counters, key, rule, now);
+          return fixedWindow(counters, key, rule, now, cost);
       }
     },
     reset(key) {

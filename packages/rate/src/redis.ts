@@ -35,34 +35,32 @@ export interface RedisStoreOptions {
 }
 
 /* ---- tunable constants ---- */
-/** Tokens consumed per request (token-bucket). */
-const TOKEN_COST = 1;
 /** Keep bucketed keys for this many windows so the previous bucket is still readable. */
 const WINDOW_TTL_FACTOR = 2;
 /** The Lua scripts return 1 for an allowed request. */
 const LUA_ALLOWED = 1;
 
-/* fixed-window: INCR + PEXPIRE on first hit. A rejected hit (count > limit) is rolled
- * back with DECR unless ARGV[3]=='1' (countRejected). Returns [count, pttl] where
- * `count` is the pre-rollback value the JS layer uses for the allow decision. */
+/* fixed-window: INCRBYFLOAT by the hit's cost (ARGV[4]) + PEXPIRE when the key has no TTL yet. A rejected hit
+ * (count > limit) is rolled back unless ARGV[3]=='1' (countRejected). Returns [count, pttl] where `count` is the
+ * pre-rollback total (as a string: Lua numbers would be truncated to integers) the JS layer decides on. */
 const FIXED = `
-local c = redis.call('INCR', KEYS[1])
-if c == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
-if c > tonumber(ARGV[2]) and ARGV[3] ~= '1' then redis.call('DECR', KEYS[1]) end
-return {c, redis.call('PTTL', KEYS[1])}`;
+local c = tonumber(redis.call('INCRBYFLOAT', KEYS[1], ARGV[4]))
+if redis.call('PTTL', KEYS[1]) < 0 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+if c > tonumber(ARGV[2]) and ARGV[3] ~= '1' then redis.call('INCRBYFLOAT', KEYS[1], -tonumber(ARGV[4])) end
+return {tostring(c), redis.call('PTTL', KEYS[1])}`;
 
-/* sliding-window: INCR current bucket, read previous. A rejected hit (weighted total
- * over the limit) is rolled back with DECR unless ARGV[4]=='1' (countRejected); the
- * weight is computed JS-side and passed as ARGV[2]. Returns [cur, prev] pre-rollback. */
+/* sliding-window: INCRBYFLOAT the current bucket by the cost (ARGV[5]), read the previous. A rejected hit (weighted
+ * total over the limit) is rolled back unless ARGV[4]=='1' (countRejected); the weight is computed JS-side and passed
+ * as ARGV[2]. Returns [cur, prev] pre-rollback, as strings. */
 const SLIDING = `
-local cur = redis.call('INCR', KEYS[1])
-if cur == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+local cur = tonumber(redis.call('INCRBYFLOAT', KEYS[1], ARGV[5]))
+if redis.call('PTTL', KEYS[1]) < 0 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
 local prev = redis.call('GET', KEYS[2])
 prev = prev and tonumber(prev) or 0
-if prev * tonumber(ARGV[2]) + cur > tonumber(ARGV[3]) and ARGV[4] ~= '1' then redis.call('DECR', KEYS[1]) end
-return {cur, prev}`;
+if prev * tonumber(ARGV[2]) + cur > tonumber(ARGV[3]) and ARGV[4] ~= '1' then redis.call('INCRBYFLOAT', KEYS[1], -tonumber(ARGV[5])) end
+return {tostring(cur), tostring(prev)}`;
 
-/* token-bucket: refill by elapsed time, take one token if available; returns [allowed, tokens]. */
+/* token-bucket: refill by elapsed time, take the hit's cost (ARGV[5]) in tokens if available; returns [allowed, tokens]. */
 const TOKEN = `
 local d = redis.call('HMGET', KEYS[1], 't', 's')
 local tokens = tonumber(d[1])
@@ -90,17 +88,17 @@ const num = (v: unknown): number => (typeof v === 'number' ? v : Number(v));
 export function redisStore(client: RedisEvalLike, opts: RedisStoreOptions = {}): RateLimitStore {
   const ns = opts.prefix ?? '';
   return {
-    async consume(key, rule, now): Promise<RateLimitResult> {
+    async consume(key, rule, now, cost): Promise<RateLimitResult> {
       const k = ns + key;
 
       if (rule.algorithm === 'token-bucket') {
         const cap = rule.limit;
         const rate = rule.limit / rule.window;
         const ttl = Math.ceil(rule.window * WINDOW_TTL_FACTOR);
-        const res = (await client.eval(TOKEN, 1, k, cap, rate, now, ttl, TOKEN_COST)) as [unknown, unknown];
+        const res = (await client.eval(TOKEN, 1, k, cap, rate, now, ttl, cost)) as [unknown, unknown];
         const allowed = num(res[0]) === LUA_ALLOWED;
         const tokens = num(res[1]);
-        const retryAfter = allowed ? 0 : Math.ceil((TOKEN_COST - tokens) / rate);
+        const retryAfter = allowed ? 0 : Math.ceil((cost - tokens) / rate);
         const reset = Math.ceil((cap - tokens) / rate);
         return { allowed, limit: cap, remaining: Math.floor(tokens), reset, retryAfter };
       }
@@ -112,7 +110,7 @@ export function redisStore(client: RedisEvalLike, opts: RedisStoreOptions = {}):
         const curKey = `${k}|${windowStart}`;
         const prevKey = `${k}|${windowStart - rule.window}`;
         const weight = (rule.window - (now - windowStart)) / rule.window;
-        const res = (await client.eval(SLIDING, 2, curKey, prevKey, rule.window * WINDOW_TTL_FACTOR, weight, rule.limit, countRejected)) as [unknown, unknown];
+        const res = (await client.eval(SLIDING, 2, curKey, prevKey, rule.window * WINDOW_TTL_FACTOR, weight, rule.limit, countRejected, cost)) as [unknown, unknown];
         const cur = num(res[0]);
         const prev = num(res[1]);
         const weighted = prev * weight + cur;
@@ -122,7 +120,7 @@ export function redisStore(client: RedisEvalLike, opts: RedisStoreOptions = {}):
       }
 
       // fixed-window
-      const res = (await client.eval(FIXED, 1, k, rule.window, rule.limit, countRejected)) as [unknown, unknown];
+      const res = (await client.eval(FIXED, 1, k, rule.window, rule.limit, countRejected, cost)) as [unknown, unknown];
       const count = num(res[0]);
       const ttl = num(res[1]);
       const allowed = count <= rule.limit;

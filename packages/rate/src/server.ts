@@ -21,8 +21,8 @@
  */
 
 import type { AnyMiddleware, BoundMiddleware, ImplFor, MiddlewareIO, StackCtx, Json } from '@ayepi/core';
-import { memoryStore, rateLimitResponse, rateLimitHeaders, rateLimit as rateLimitDef, DEFAULT_ALGORITHM, DEFAULT_PREFIX } from './index';
-import type { Algorithm, RateKeyIO, RateLimitInfo, RateLimitResult, RateLimitRule, RateLimitStore } from './index';
+import { memoryStore, rateLimitResponse, rateLimitHeaders, rateLimit as rateLimitDef, hitCost, DEFAULT_ALGORITHM, DEFAULT_PREFIX } from './index';
+import type { Algorithm, RateHit, RateKeyIO, RateLimitInfo, RateLimitResult, RateLimitRule, RateLimitStore } from './index';
 
 /** The `requires` chain of a middleware def. */
 type ReqOf<M extends AnyMiddleware> = M['__req'];
@@ -76,6 +76,11 @@ export interface RateLimitServerOptions<M extends AnyMiddleware> {
    * request. Default `false`; see {@link RateLimitRule.countRejected}.
    */
   readonly countRejected?: Dynamic<M, boolean>;
+  /**
+   * What a request costs against the limit — fixed, or per request (default 1). Weight requests to limit by tokens,
+   * bytes or money; see {@link RateHit.cost}.
+   */
+  readonly cost?: Dynamic<M, number>;
   /** Backend store (default an in-process memory store). */
   readonly store?: RateLimitStore;
   /** Key prefix/namespace (default `'rl:'`). */
@@ -137,9 +142,10 @@ function rateLimitServer<M extends AnyMiddleware>(def: M, opts: RateLimitServerO
       advertise(skipped);
       return io.next({ ratelimit: skipped });
     }
+    const cost = hitCost(opts.cost !== undefined ? resolve(opts.cost, kio) : undefined); // a bad cost is a bug, not a store outage
     let result: RateLimitResult;
     try {
-      result = await store.consume(prefix + opts.key(kio), rule, Date.now());
+      result = await store.consume(prefix + opts.key(kio), rule, Date.now(), cost);
     } catch (err) {
       try {
         opts.onError?.(err);

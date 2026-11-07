@@ -10,7 +10,7 @@ import { rateLimit, type RateLimitServerOptions } from '../src/server';
 import { limiter, rateLimitResponse, memoryStore, rateLimitedDoer, type RateLimitRule, type RateLimitDef, type RateLimitStore, type RateLimitedBacklogInfo } from '../src/index';
 
 /* ---------- algorithms via memoryStore (controlled `now`) ---------- */
-const consume = async (s: ReturnType<typeof memoryStore>, key: string, rule: RateLimitRule, now: number) => s.consume(key, rule, now);
+const consume = async (s: ReturnType<typeof memoryStore>, key: string, rule: RateLimitRule, now: number) => s.consume(key, rule, now, 1);
 
 describe('memoryStore algorithms', () => {
   it('fixed-window: allows up to the limit, then blocks, then resets', async () => {
@@ -100,9 +100,9 @@ describe('limiter (standalone primitive)', () => {
   it('accepts an explicit `now` and exposes its rule', async () => {
     const lim = limiter({ limit: 1, window: 1000, algorithm: 'token-bucket' });
     expect(lim.rule).toEqual({ limit: 1, window: 1000, algorithm: 'token-bucket', countRejected: false });
-    expect((await lim.check('k', 0)).allowed).toBe(true);
-    expect((await lim.check('k', 0)).allowed).toBe(false);
-    expect((await lim.check('k', 2000)).allowed).toBe(true); // refilled by time
+    expect((await lim.check('k', { now: 0 })).allowed).toBe(true);
+    expect((await lim.check('k', { now: 0 })).allowed).toBe(false);
+    expect((await lim.check('k', { now: 2000 })).allowed).toBe(true); // refilled by time
   });
 
   it('rateLimitResponse builds a 429 from info, standalone', async () => {
@@ -212,7 +212,7 @@ describe('rateLimit middleware', () => {
     const store: RateLimitStore = {
       consume: (k, rule, t) => {
         seen.push(rule);
-        return mem.consume(k, rule, t);
+        return mem.consume(k, rule, t, 1);
       },
     };
     const app = makeApp({
@@ -361,7 +361,7 @@ describe('rateLimitedDoer — store errors are not fatal', () => {
     const store: RateLimitStore = {
       consume: (k, rule, t) => {
         if (fail) {throw new Error('store down');}
-        return mem.consume(k, rule, t);
+        return mem.consume(k, rule, t, 1);
       },
     };
     let ran = 0;
@@ -382,7 +382,7 @@ describe('rateLimitedDoer — store errors are not fatal', () => {
       return {
         consume: (k, rule, t) => {
           if (flag.fail) {throw new Error('store down');}
-          return mem.consume(k, rule, t);
+          return mem.consume(k, rule, t, 1);
         },
       };
     };
@@ -490,7 +490,7 @@ describe('rateLimitedDoer — two-tier (global + per-group) limiting', () => {
     const store: RateLimitStore = {
       consume: (k, rule, t) => {
         if (fail && k.includes('grp:')) {throw new Error('group store down');}
-        return mem.consume(k, rule, t);
+        return mem.consume(k, rule, t, 1);
       },
     };
     const ran: string[] = [];
