@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { defineWork, createWork, dependency, conditionMet, type MemoryQueue, type WorkState } from '../src/index';
 
 const fast = { pollInterval: 5, visibility: 5000, heartbeat: 2000 } as const;
-const st = (status: WorkState['status']): WorkState => ({ id: 'x', type: 't', status, attempt: 1, queueAt: 0, startAt: 0 });
+const st = (status: WorkState['status']): WorkState => ({ id: 'x', type: 't', groupId: 'g', status, attempt: 1, queueAt: 0, startAt: 0 });
 
 describe('conditionMet', () => {
   it('evaluates all-done / all-success / count', () => {

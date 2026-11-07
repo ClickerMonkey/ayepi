@@ -10,6 +10,22 @@
  * @module
  */
 
+/**
+ * Why a cancelled work item ended: a {@link WorkHandle.result} of a cancelled item rejects with it, and it is the
+ * `reason` of a running handler's aborted {@link WorkContext.signal}.
+ */
+export class WorkCancelledError extends Error {
+  constructor(
+    /** The cancelled item's id. */
+    readonly id: string,
+    /** The reason given to `cancel`, if any. */
+    readonly reason?: string,
+  ) {
+    super(reason === undefined ? `work ${id} was cancelled` : `work ${id} was cancelled: ${reason}`);
+    this.name = 'WorkCancelledError';
+  }
+}
+
 /** When a {@link WorkDelayError} wants the work to run: an absolute time, a relative delay, or both. */
 export interface WorkDelaySpec {
   /** Absolute time to run at (epoch ms). Wins over {@link delay}. */

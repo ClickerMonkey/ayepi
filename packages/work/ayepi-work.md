@@ -159,6 +159,7 @@ interface WorkContext {
   void(): WorkResult<void, void>
   states(ids: readonly string[]): Promise<(WorkState | undefined)[]>
   claim(key: string): Promise<boolean>
+  readonly signal: AbortSignal         // aborts when this item is cancelled while it runs (see "Cancellation")
 }
 ```
 
@@ -303,6 +304,7 @@ interface WorkSystem<Defs extends readonly AnyWorkBuilder[]> {
   // name form — name ∈ registry, input typed
   enqueue<K extends RegistryNames<Defs>>(name: K, input: InputForName<Defs, K>, options?: WorkInstanceOptions): WorkHandle<SelfForName<Defs, K>, GroupForName<Defs, K>>
   schedule(config: ScheduleConfig): () => void  // returns a cancel fn; see deps-schedule doc
+  cancel(id: string, reason?: string): Promise<boolean>  // cancel an item fleet-wide; see "Cancellation"
   start(): void                                  // start worker + scheduler loops (idempotent)
   stop(): Promise<void>                          // stop loops, flush in-flight (idempotent)
   list(): Promise<WorkState[]>                   // snapshot of known states (best-effort)
@@ -324,6 +326,7 @@ interface WorkHandle<Self, Group> extends PromiseLike<Group> {
   readonly groupId: string
   result(): Promise<Self>   // this item's own output
   group(): Promise<Group>   // the group's final result (same as awaiting the handle)
+  cancel(reason?: string): Promise<boolean>  // cancel this item (same as w.cancel(id, reason))
 }
 ```
 
@@ -760,6 +763,38 @@ settles, the awaiting `.result()` **rejects**, and the `'expired'` event
 `work.expired` counter is bumped. (The dependency type's own `timeout` is the same idea
 applied to a fan-in gate — see [deps & scheduling](./ayepi-work-deps-schedule.md).)
 
+## Cancellation
+
+`w.cancel(id, reason?)` (or `handle.cancel(reason?)`) ends a work item early, wherever it is in the fleet:
+
+- **Queued** — waiting, delayed (`delay`/`runAt`), or waiting on a retry backoff: it ends `'cancelled'` **at
+  once** and never runs. When its message is later delivered, the delivery is just dropped.
+- **Running** — its handler's `ctx.signal` aborts, with a `WorkCancelledError` as the reason. Pass the
+  signal to fetches and child processes, or check it between steps. When the handler returns or throws,
+  its `WorkResult` is **discarded** (no children are queued) and the item ends `'cancelled'` — never
+  retried or dead-lettered.
+- **Finished** — nothing happens; `cancel` resolves `false` (as it does for an unknown id).
+
+```ts
+const h = w.enqueue(render({ doc }), { priority: 5 })
+await h.cancel('the user closed the tab')                   // true
+await h.result().catch((e) => e instanceof WorkCancelledError) // true; e.reason === 'the user closed the tab'
+
+const crawl = defineWork('crawl', async (i: { url: string }, ctx) =>
+  ctx.result(await (await fetch(i.url, { signal: ctx.signal })).text()))
+```
+
+The request is stored (`cancel:<id>`) and published; the instance holding a running item aborts it on the
+pub/sub message, and its lease heartbeat re-reads the store, so a lost message still lands within one
+heartbeat. A cancelled item's `.result()` rejects with `WorkCancelledError` (`{ id, reason? }`); its
+state is `'cancelled'`; the `'cancelled'` event fires and `work.cancelled` is counted; its **group settles
+without it**, and `'all-done'` dependencies count it as done. Items it already queued keep running —
+cancel them by id if they should stop too.
+
+**Every item ends exactly once.** Each terminal outcome (success, dead-letter, expiry, cancel) claims the
+item's end in the store (`Store.setIfNotExists`) before it records anything, so a cancel that races a
+finishing run, or a redelivered item that runs twice, settles the group once and keeps the first outcome.
+
 ## Lifecycle events & affinity
 
 `onEvent(event)` (global, and per-type via `WorkOptions.onEvent`) fires for:
@@ -772,6 +807,7 @@ type WorkEvent =
   | { kind: 'succeeded';  id; type; groupId; attempt; result; parent?; dependents?; at }
   | { kind: 'failed';     id; type; groupId; attempt; error; willRetry; parent?; dependents?; at }   // willRetry:false ⇒ dead-letter
   | { kind: 'expired';    id; type; groupId; deadline; parent?; dependents?; at }   // past its deadline/timeout — terminal, no retry
+  | { kind: 'cancelled';  id; type; groupId; reason?; parent?; dependents?; at }    // cancel() — terminal
   | { kind: 'group-done'; groupId; result; at }
 ```
 
@@ -806,7 +842,8 @@ awaited it (an orphan). `info` is `{ groupId, lastResult, states }`.
 
 ```ts
 interface WorkState {
-  readonly id; readonly type; readonly status   // 'pending'|'running'|'success'|'failed'|'dead'
+  readonly id; readonly type; readonly status   // 'pending'|'running'|'success'|'failed'|'dead'|'cancelled'
+  readonly groupId: string    // the group this item belongs to
   readonly attempt: number
   readonly result?: unknown
   readonly error?: string
@@ -837,7 +874,7 @@ Metric names live on the exported `WORK_METRICS` map (so you reference series wi
 
 ```
 counters   work.queued  work.started  work.succeeded  work.failed
-           work.retried  work.deferred  work.rescheduled
+           work.retried  work.deferred  work.rescheduled  work.expired  work.cancelled
 gauges     work.active  work.pending  work.running  work.peak_active
            work.last_queued_at  work.last_started_at  work.last_succeeded_at  work.last_failed_at
 summaries  work.wait_time      poll lag      runAt − startAt
@@ -940,7 +977,11 @@ algorithms, every tunable constant) lives in
   a union and narrow, or use `.result()` for a precisely-typed single-item output. A work
   that returns `ctx.queue(...)` delegates, so its `.result()` is `void`.
 - **At-least-once semantics.** An item can be delivered more than once (lease expiry,
-  redelivery). Handlers should be **idempotent**, or guard side effects with `ctx.claim`.
+  redelivery), so a handler may run more than once. Its **outcome** is recorded once (the first terminal
+  outcome wins), but its side effects are not: handlers should be **idempotent**, or guard side effects
+  with `ctx.claim`.
+- **Cancelling a running item is cooperative.** The engine aborts `ctx.signal` and discards the result,
+  but only the handler can stop its own work early.
 - **`increment` and non-atomic fallback.** Without a real atomic `Store.increment`, the
   group open-counter falls back to get+set — correct only on a **single process**. Any
   multi-pod backend must implement `increment` atomically.

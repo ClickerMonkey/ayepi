@@ -61,9 +61,10 @@ const out = await w.enqueue(root({ ids: ['a', 'b'] })) // typed: fetch's | repor
 ```
 
 Per-work `ctx`: `id`, `groupId`, `attempt`, `parent` (who queued it), `dependents` (ids it
-depended on). A handler must **return** every `ctx.queue`/`result`/`void` it creates — an
+depended on), `signal` (aborts on cancel). A handler must **return** every `ctx.queue`/`result`/`void` it creates — an
 un-returned one throws (opt out with `strictReturn: false`). Set `deadline`/`timeout` to make
-an item that doesn't start+finish in time go terminal with an `'expired'` event. `setIdGenerator`
+an item that doesn't start+finish in time go terminal with an `'expired'` event. `w.cancel(id)` /
+`handle.cancel()` ends a queued item at once and aborts a running one's `ctx.signal`. `setIdGenerator`
 overrides how work ids are minted.
 
 ## Instance options, retries, delay

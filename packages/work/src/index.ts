@@ -36,7 +36,7 @@ import type { WorkState } from './types';
 export { createWork } from './engine';
 export { defineWork, defineBatchWork } from './types';
 export { setIdGenerator } from './internal';
-export { WorkDelayError } from './errors';
+export { WorkDelayError, WorkCancelledError } from './errors';
 export type { WorkDelaySpec } from './errors';
 export { RetryAbort } from '@ayepi/core/retry';
 export type {
@@ -130,5 +130,7 @@ export const schedule = instance.schedule;
 export const start = (): void => instance.start();
 /** Stop the default system. */
 export const stop = (): Promise<void> => instance.stop();
+/** Cancel a work item on the default system. */
+export const cancel = (id: string, reason?: string): Promise<boolean> => instance.cancel(id, reason);
 /** Snapshot the default system's known work states. */
 export const list = (): Promise<WorkState[]> => instance.list();

@@ -19,7 +19,7 @@ import { defaultCodec, type JsonCodec } from './json';
 import { memoryBackend } from './memory';
 import type { Backend, PulledWork, Queue } from './ports';
 import { genId, identityLogWith, merge, sleep } from './internal';
-import { WorkDelayError } from './errors';
+import { WorkCancelledError, WorkDelayError } from './errors';
 import { DEPENDENCY_TYPE, dependencyHandler, dependency } from './dependency';
 import { startSchedule } from './schedule';
 import { createWorkStats } from './stats';
@@ -94,6 +94,20 @@ interface Envelope {
   /** When queued by a fired dependency, the ids this work depended on. */
   readonly dependents?: readonly string[];
 }
+
+/** What identifies one item's life and describes it in its state and events (a subset of the {@link Envelope}). */
+type ItemInfo = Pick<Envelope, 'id' | 'type' | 'groupId' | 'attempt' | 'queueAt' | 'startAt' | 'priority' | 'group' | 'parent' | 'dependents'>;
+
+/** The single terminal outcome an item's life ends with. */
+type Outcome = 'success' | 'dead' | 'cancelled';
+
+/** A cancel request: present (with its optional reason) once `cancel` was called for an item. */
+interface CancelRequest {
+  readonly reason?: string;
+}
+
+/** Statuses an item never leaves. */
+const TERMINAL_STATUS: ReadonlySet<WorkState['status']> = new Set(['success', 'failed', 'dead', 'cancelled']);
 
 /** Resolved per-instance options. */
 interface Resolved {
@@ -242,11 +256,20 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     }
     g.set(state.id, state);
   };
-  const setState = async (state: WorkState, groupId: string): Promise<void> => {
+  const setState = async (partial: Omit<WorkState, 'groupId'>, groupId: string): Promise<void> => {
+    const state: WorkState = { ...partial, groupId };
     const { result: _result, ...forStore } = state; // result lives under its own key; keep stored state JSON-safe
     await port(() => Promise.resolve(store.set(k(`state:${state.id}`), JSON.stringify(forStore), RESULT_TTL)));
     recordState(state, groupId);
   };
+
+  /**
+   * Claim the single terminal outcome of an item's life. Every terminal path (success, dead-letter, expiry, cancel)
+   * goes through it, so an item settles its group exactly once even when a cancel races a finishing run or a
+   * redelivered item runs twice. A DLQ redrive starts a new life (a fresh `queueAt`).
+   */
+  const endKey = (info: ItemInfo): string => k(`end:${info.id}:${info.queueAt}`);
+  const endOnce = (info: ItemInfo, outcome: Outcome): Promise<boolean> => port(() => Promise.resolve(store.setIfNotExists(endKey(info), outcome, RESULT_TTL)));
   const readState = async (id: string): Promise<WorkState | undefined> => {
     const s = await Promise.resolve(store.get(k(`state:${id}`)));
     if (s === undefined) {return allStates.get(id);} // fall back to local (skip-queue) state
@@ -321,7 +344,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     readonly parent?: string;
     readonly dependents?: readonly string[];
   }
-  const makeContext = (meta: ExecMeta, created: Set<WRNode>): WorkContext => {
+  const makeContext = (meta: ExecMeta, created: Set<WRNode>, signal: AbortSignal): WorkContext => {
     const reg = (n: WRNode): WRNode => (created.add(n), n);
     const ctx = {
       id: meta.id,
@@ -337,6 +360,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
       void: () => reg(makeNode({ kind: 'void' })),
       states: storeStates,
       claim: storeClaim,
+      signal,
     };
     return ctx as unknown as WorkContext; // internal cast: loose node-builders behind the typed WorkContext
   };
@@ -403,7 +427,11 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
       await markWaiting();
       return waitForGroup(groupId);
     };
-    const handle = { id, groupId, result, group, then: (onF?: ((v: unknown) => unknown) | null, onR?: ((e: unknown) => unknown) | null) => group().then(onF, onR) };
+    const cancel = async (reason?: string): Promise<boolean> => {
+      await ready.catch(() => undefined); // an enqueue that failed left nothing to cancel; cancelWork reports that
+      return cancelWork(id, reason);
+    };
+    const handle = { id, groupId, result, group, cancel, then: (onF?: ((v: unknown) => unknown) | null, onR?: ((e: unknown) => unknown) | null) => group().then(onF, onR) };
     return handle as unknown as WorkHandle<unknown, unknown>; // internal cast: a PromiseLike whose `then` resolves the group
   };
 
@@ -427,6 +455,12 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
         if (err !== undefined) {
           cleanup();
           reject(new Error(err));
+          return;
+        }
+        const cancelled = await Promise.resolve(store.get(k(`item:${id}:cancelled`)));
+        if (cancelled !== undefined) {
+          cleanup();
+          reject(new WorkCancelledError(id, parseCancel(cancelled).reason));
         }
       };
       teardown.push(
@@ -544,12 +578,95 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
     })();
   };
 
+  /* ---- cancellation ---- */
+  const cancelKey = (id: string): string => k(`cancel:${id}`);
+  const parseCancel = (raw: string): CancelRequest => {
+    try {
+      const v = JSON.parse(raw) as { reason?: unknown };
+      return typeof v.reason === 'string' ? { reason: v.reason } : {};
+    } catch {
+      return {};
+    }
+  };
+  /** Cancel requests heard for items this instance holds (by a local `cancel`, pub/sub, or a heartbeat read). */
+  const heardCancels = new Map<string, CancelRequest>();
+  /** The abort controller behind each running item's `ctx.signal`. */
+  const runningControllers = new Map<string, AbortController>();
+  /** Record a cancel for an item this instance holds, and abort its run if it is running. */
+  const hearCancel = (id: string, request: CancelRequest): void => {
+    if (!activeMap.has(id)) {return;} // not ours: whoever holds it (or the next delivery) reads the store
+    heardCancels.set(id, request);
+    runningControllers.get(id)?.abort(new WorkCancelledError(id, request.reason));
+  };
+  /** Whether `cancel` was called for an item: heard locally, else read from the store (a read error counts as no). */
+  const cancelRequested = async (id: string): Promise<CancelRequest | null> => {
+    const heard = heardCancels.get(id);
+    if (heard) {return heard;}
+    try {
+      const raw = await Promise.resolve(store.get(cancelKey(id)));
+      return raw === undefined ? null : parseCancel(raw);
+    } catch (err) {
+      report(err, 'commit');
+      return null;
+    }
+  };
+  /**
+   * End an item's life as `'cancelled'` (if it has not ended yet) and drop its delivery. A run that lost the race to
+   * a cancel that already ended it re-writes the cancelled state, since its own `running` write may have landed after.
+   */
+  const cancelItem = async (p: PulledWork | null, info: ItemInfo, q: Queue | null, request: CancelRequest, runAt?: number): Promise<void> => {
+    const at = now();
+    const state = { id: info.id, type: info.type, status: 'cancelled', attempt: info.attempt, queueAt: info.queueAt, startAt: info.startAt, runAt, endAt: at, priority: info.priority, group: info.group } as const;
+    if (await endOnce(info, 'cancelled')) {
+      stats.cancelled(info.type);
+      await port(() => Promise.resolve(store.set(k(`item:${info.id}:cancelled`), JSON.stringify(request), RESULT_TTL)));
+      await setState(state, info.groupId);
+      notify({ kind: 'done', id: info.id, groupId: info.groupId, cancelled: true });
+      emit({ kind: 'cancelled', id: info.id, type: info.type, groupId: info.groupId, reason: request.reason, parent: info.parent, dependents: info.dependents, at });
+      await settleGroup(info.groupId);
+    } else if ((await Promise.resolve(store.get(endKey(info)))) === 'cancelled') {
+      await setState(state, info.groupId);
+    }
+    if (p && q) {await port(() => Promise.resolve(q.ack(p)));}
+  };
+  /** {@link WorkSystem.cancel}: request the cancel fleet-wide, and end a queued item at once. */
+  const cancelWork = async (id: string, reason?: string): Promise<boolean> => {
+    const state = await readState(id);
+    if (!state || TERMINAL_STATUS.has(state.status)) {return false;}
+    const request: CancelRequest = reason === undefined ? {} : { reason };
+    await port(() => Promise.resolve(store.setIfNotExists(cancelKey(id), JSON.stringify(request), RESULT_TTL)));
+    notify({ kind: 'cancel', id, reason }); // whichever instance holds it aborts the run
+    hearCancel(id, request);
+    // queued, delayed or waiting on a retry, and not held here: end it now (a later delivery just acks)
+    if (state.status === 'pending' && !activeMap.has(id)) {
+      await cancelItem(null, { ...state, priority: state.priority ?? 0 }, null, request);
+    }
+    return true;
+  };
+  let unsubscribeCancels: (() => void) | null = null;
+  const listenForCancels = (): void => {
+    unsubscribeCancels ??= pubsub.subscribe((m) => {
+      try {
+        const e = JSON.parse(m) as { kind?: string; id?: unknown; reason?: unknown };
+        if (e.kind === 'cancel' && typeof e.id === 'string') {hearCancel(e.id, typeof e.reason === 'string' ? { reason: e.reason } : {});}
+      } catch {
+        /* ignore foreign messages */
+      }
+    });
+  };
+
   /* ---- processing ---- */
-  /** Keep a leased item's lease (and its heartbeat key) alive on the **queue it came from**. */
+  /**
+   * Keep a leased item's lease (and its heartbeat key) alive on the **queue it came from**, and pick up a cancel
+   * request a lost pub/sub message didn't deliver.
+   */
   const startHeartbeat = (p: PulledWork, id: string, q: Queue): ReturnType<typeof setInterval> => {
     const hb = setInterval(() => {
       void Promise.resolve(q.heartbeat(p, visibility));
       void Promise.resolve(store.set(k(`hb:${id}`), String(now()), visibility));
+      void cancelRequested(id).then((request) => {
+        if (request) {hearCancel(id, request);}
+      });
     }, heartbeatEvery);
     unref(hb);
     return hb;
@@ -598,6 +715,10 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   };
 
   const deadLetterItem = async (p: PulledWork | null, env: Envelope, error: string, q: Queue | null, runAt?: number): Promise<void> => {
+    if (!(await endOnce(env, 'dead'))) {
+      if (p && q) {await port(() => Promise.resolve(q.ack(p)));} // this life already ended (e.g. cancelled)
+      return;
+    }
     const at = now();
     stats.failed(env.type, at, runAt === undefined ? undefined : at - runAt, at - env.queueAt, env.attempt); // no runAt → never ran (unknown type / bad input): no errorTime
     await port(() => Promise.resolve(store.set(k(`item:${env.id}:error`), error, RESULT_TTL)));
@@ -616,6 +737,10 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
 
   /** Terminal expiry: like a dead-letter, but emits `'expired'` (the item didn't start+finish by its deadline). */
   const expireItem = async (p: PulledWork | null, env: Envelope, q: Queue | null): Promise<void> => {
+    if (!(await endOnce(env, 'dead'))) {
+      if (p && q) {await port(() => Promise.resolve(q.ack(p)));} // this life already ended (e.g. cancelled)
+      return;
+    }
     const at = now();
     const error = 'deadline exceeded';
     stats.expired(env.type);
@@ -650,6 +775,10 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   };
 
   const finishSuccess = async (p: PulledWork | null, env: Envelope, runAt: number, output: unknown, q: Queue | null): Promise<void> => {
+    if (!(await endOnce(env, 'success'))) {
+      if (p && q) {await port(() => Promise.resolve(q.ack(p)));} // this life already ended (cancelled, or a duplicate delivery)
+      return;
+    }
     const at = now();
     stats.succeeded(env.type, at, at - runAt, at - env.queueAt, env.attempt);
     await port(() => Promise.resolve(store.set(k(`result:${env.id}`), codecFor(env.type).stringify(output), RESULT_TTL)));
@@ -776,20 +905,49 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
    * active-set entry + heartbeat are always cleaned up regardless of how the run ends. The handler
    * returns a {@link WorkResult}; we then apply its tree (enqueue children, write group contributions).
    */
-  const execute = (p: PulledWork | null, env: Envelope, input: unknown, def: AnyWorkBuilder['def'], q: Queue | null, release: () => void): Promise<void> =>
-    scoped(release, async () => {
+  const execute = (p: PulledWork | null, env: Envelope, input: unknown, def: AnyWorkBuilder['def'], q: Queue | null, release: () => void): Promise<void> => {
+    const controller = new AbortController();
+    runningControllers.set(env.id, controller);
+    const releaseRun = (): void => {
+      runningControllers.delete(env.id);
+      heardCancels.delete(env.id);
+      release();
+    };
+    return scoped(releaseRun, async () => {
+      const early = heardCancels.get(env.id); // cancelled while waiting for a doer slot
+      if (early) {
+        await cancelItem(p, env, q, early).catch((err: unknown) => report(err, 'commit'));
+        return;
+      }
       const runAt = now();
       markRunningSync(env, runAt); // flip the active-map entry synchronously (cheap, on the critical path)...
       // ...but persist the `running` state + emit `started` ALONGSIDE the handler.
       const running = persistRunning(env, runAt).catch((err: unknown) => report(err, 'commit'));
       const created = new Set<WRNode>();
-      const ctx = makeContext({ id: env.id, groupId: env.groupId, attempt: env.attempt, parent: env.parent, dependents: env.dependents }, created);
-      let itemValue: unknown;
+      const ctx = makeContext({ id: env.id, groupId: env.groupId, attempt: env.attempt, parent: env.parent, dependents: env.dependents }, created, controller.signal);
+      let ret: WRNode;
       try {
         const logCtx = merge(opts.logContext?.(input, env.type), def.options.logContext?.(input as never));
-        const ret: unknown = await logWith(logCtx, () => Promise.resolve(def.handler(input as never, ctx)));
-        if (!isWR(ret)) {throw new Error(`work "${env.type}" handler must return a WorkResult — ctx.result(...), ctx.queue(...), or ctx.void()`);}
-        if (def.options.strictReturn ?? strictReturnDefault) {reachableCheck(ret, created);}
+        const out: unknown = await logWith(logCtx, () => Promise.resolve(def.handler(input as never, ctx)));
+        if (!isWR(out)) {throw new Error(`work "${env.type}" handler must return a WorkResult — ctx.result(...), ctx.queue(...), or ctx.void()`);}
+        if (def.options.strictReturn ?? strictReturnDefault) {reachableCheck(out, created);}
+        ret = out;
+      } catch (err) {
+        await running; // order the 'running' write before the terminal/deferred state
+        const request = await cancelRequested(env.id);
+        if (request) {await cancelItem(p, env, q, request, runAt);}
+        else {await handleFailure(p, env, runAt, err, q);}
+        return;
+      }
+      // cancelled while it ran: discard the result (queue no children) and end cancelled
+      const request = await cancelRequested(env.id);
+      if (request) {
+        await running;
+        await cancelItem(p, env, q, request, runAt).catch((err: unknown) => report(err, 'commit'));
+        return;
+      }
+      let itemValue: unknown;
+      try {
         const pending: Promise<void>[] = [];
         // a fired dependency tags its queued works' `dependents` with the ids it waited on
         const assignDeps = env.type === DEPENDENCY_TYPE ? (input as { on?: readonly string[] }).on : undefined;
@@ -810,6 +968,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
         report(err, 'commit');
       }
     });
+  };
 
   /* ---- batching ---- */
   interface BatchItem {
@@ -907,6 +1066,13 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
       env = JSON.parse(p.body) as Envelope;
     } catch {
       await Promise.resolve(q.ack(p)); // unparseable — drop it
+      return false;
+    }
+
+    // cancelled while queued (the cancel may have ended it already; this just drops the delivery)
+    const request = await cancelRequested(env.id);
+    if (request) {
+      await cancelItem(p, env, q, request);
       return false;
     }
 
@@ -1145,10 +1311,13 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   const start = (): void => {
     if (running) {return;}
     running = true;
+    listenForCancels();
     loopPromise = loop();
   };
   const stop = async (): Promise<void> => {
     running = false;
+    unsubscribeCancels?.();
+    unsubscribeCancels = null;
     backedUpSince = null;
     if (backlogTimer) {
       clearTimeout(backlogTimer);
@@ -1185,6 +1354,7 @@ export function createWork<const Defs extends readonly AnyWorkBuilder[]>(opts: W
   const api = {
     enqueue: enqueueImpl as unknown as WorkSystem<Defs>['enqueue'], // internal cast: one impl behind the two typed overloads
     schedule,
+    cancel: cancelWork,
     start,
     stop,
     list: () => Promise.resolve([...allStates.values()]),

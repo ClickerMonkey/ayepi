@@ -37,7 +37,7 @@ interface SerializedWork {
 }
 
 /** A terminal status remembered for a watched work. */
-export type TerminalStatus = 'success' | 'failed' | 'dead';
+export type TerminalStatus = 'success' | 'failed' | 'dead' | 'cancelled';
 
 /** The JSON input carried by a {@link DEPENDENCY_TYPE} work item. */
 export interface DependencyInput {
@@ -75,7 +75,7 @@ export interface DependencyOptions {
   readonly timeout?: number;
 }
 
-const TERMINAL: ReadonlySet<string> = new Set(['success', 'failed', 'dead']);
+const TERMINAL: ReadonlySet<string> = new Set(['success', 'failed', 'dead', 'cancelled']);
 const isTerminal = (s: WorkState | undefined): boolean => s !== undefined && TERMINAL.has(s.status);
 const isSuccess = (s: WorkState | undefined): boolean => s?.status === 'success';
 

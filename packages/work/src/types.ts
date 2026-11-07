@@ -109,6 +109,12 @@ export interface WorkContext {
   states(ids: readonly string[]): Promise<(WorkState | undefined)[]>;
   /** Win a one-time distributed claim for `key` (returns `true` once across the fleet). */
   claim(key: string): Promise<boolean>;
+  /**
+   * Aborts when this item is cancelled while it runs (its reason is a {@link WorkCancelledError}). Pass it to
+   * fetches and child processes, or check it between steps. A cancelled run's returned `WorkResult` is discarded
+   * (no children are queued) and the item ends `'cancelled'`.
+   */
+  readonly signal: AbortSignal;
 }
 
 /** A work handler: maps typed input (+ context) to a {@link WorkResult} describing what it produced. */
@@ -330,17 +336,21 @@ export interface WorkHandle<Self, Group> extends PromiseLike<Group> {
   result(): Promise<Self>;
   /** Resolve to the **group's** final result (same as awaiting the handle). */
   group(): Promise<Group>;
+  /** Cancel this item; see {@link WorkSystem.cancel}. */
+  cancel(reason?: string): Promise<boolean>;
 }
 
 /* ---- run-time state ---- */
 
 /** Lifecycle status of a single work item. */
-export type WorkStatus = 'pending' | 'running' | 'success' | 'failed' | 'dead';
+export type WorkStatus = 'pending' | 'running' | 'success' | 'failed' | 'dead' | 'cancelled';
 
 /** A snapshot of one work item's state. */
 export interface WorkState {
   readonly id: string;
   readonly type: string;
+  /** The group this item belongs to. */
+  readonly groupId: string;
   readonly status: WorkStatus;
   readonly attempt: number;
   readonly result?: unknown;
@@ -388,6 +398,7 @@ export type WorkEvent =
   | { readonly kind: 'succeeded'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly result: unknown; readonly parent?: string; readonly dependents?: readonly string[]; readonly at: number }
   | { readonly kind: 'failed'; readonly id: string; readonly type: string; readonly groupId: string; readonly attempt: number; readonly error: string; readonly willRetry: boolean; readonly parent?: string; readonly dependents?: readonly string[]; readonly at: number }
   | { readonly kind: 'expired'; readonly id: string; readonly type: string; readonly groupId: string; readonly deadline: number; readonly parent?: string; readonly dependents?: readonly string[]; readonly at: number }
+  | { readonly kind: 'cancelled'; readonly id: string; readonly type: string; readonly groupId: string; readonly reason?: string; readonly parent?: string; readonly dependents?: readonly string[]; readonly at: number }
   | { readonly kind: 'group-done'; readonly groupId: string; readonly result: unknown; readonly at: number };
 
 /** What {@link WorkSystemOptions.accept} receives to decide whether *this* instance should run an item. */
@@ -590,6 +601,16 @@ export interface WorkSystem<Defs extends readonly AnyWorkBuilder[]> {
   enqueue<K extends RegistryNames<Defs>>(name: K, input: InputForName<Defs, K>, options?: WorkInstanceOptions): WorkHandle<SelfForName<Defs, K>, GroupForName<Defs, K>>;
   /** Register a recurring schedule; returns a cancel function. */
   schedule(config: ScheduleConfig): () => void;
+  /**
+   * Cancel a work item, anywhere in the fleet. A queued (or retry-waiting, or delayed) item ends `'cancelled'` at
+   * once and never runs; a running item's {@link WorkContext.signal} aborts and, when its handler returns or throws,
+   * its result is discarded and it ends `'cancelled'`. The item's `.result()` rejects with a
+   * {@link WorkCancelledError}; its group settles without it. Items it already queued are not cancelled.
+   *
+   * Resolves `true` when the item existed and had not finished, `false` otherwise. An item that finishes while the
+   * request is in flight keeps its outcome: every item ends exactly once.
+   */
+  cancel(id: string, reason?: string): Promise<boolean>;
   /** Start the worker + scheduler loops (idempotent). */
   start(): void;
   /** Stop the loops and flush in-flight heartbeats (idempotent). */
