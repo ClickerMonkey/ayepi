@@ -110,6 +110,8 @@ Everything below is exported. `@internal` symbols are intentionally omitted.
 | `RateLimitedDoerOptions` | interface | Options for `rateLimitedDoer` (global + group limits, backlog watch). |
 | `RateLimitedDoer` | interface | The doer `rateLimitedDoer` returns (a `Doer` whose `do` takes `RateTaskOptions`). |
 | `RateTaskOptions` | interface | Per-task options — `DoerTaskOptions` + `groupLimit`/`groupWindow`/`groupAlgorithm`/`cost`. |
+| `applyHit` | function | The single implementation of all three algorithms over a `RateState` (Map-like cells); `memoryStore` runs it on Maps, `@ayepi/sqlite`'s store on rows. |
+| `RateState` / `RateCells` / `RateCounter` / `RateBucket` | interfaces | The cells `applyHit` reads and writes back: window counters `{ count, reset }` and token buckets `{ tokens, ts }`. |
 | `RateHit` | interface | One hit for `limiter.check`: `{ now?, cost? }`. |
 | `hitCost` | function | Validate a hit's cost (default 1); throws `RangeError` when negative or non-finite. |
 | `DEFAULT_COST` | const | `1` — what a hit costs when no cost is given. |

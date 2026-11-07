@@ -39,6 +39,8 @@ Guidance for working in this repo — a pnpm monorepo of `@ayepi/*` packages.
 
 - `@ayepi/redis` — Redis (ioredis): a pub/sub `Broker`, an `@ayepi/work` Store + PubSub, and an
   `@ayepi/cache` store.
+- `@ayepi/sqlite` — SQLite (better-sqlite3, on a connection the app opens): the `@ayepi/work` Queue +
+  Store + PubSub and an `@ayepi/rate` store, on one file shared across processes.
 - `@ayepi/aws` — AWS: an SQS `@ayepi/work` queue (large payloads offloaded to S3), an S3
   `@ayepi/files` store, and a pooled SDK request handler.
 

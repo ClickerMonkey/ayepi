@@ -85,6 +85,7 @@ Cross-cutting conventions, true across the whole library:
 | --- | --- |
 | [`./ayepi-work.md`](./ayepi-work.md) · [`-ports`](./ayepi-work-ports.md) · [`-deps-schedule`](./ayepi-work-deps-schedule.md) | a typed **work/job engine**: retries, dependencies, scheduling, batching, distributed waits. The `Queue`/`Store`/`PubSub` ports + the bundled in-memory (optionally **file-backed/durable**) backend. |
 | [`./ayepi-files.md`](./ayepi-files.md) | an **S3-like, stream-first file store** with prefix listing + presigned upload/download URLs (filesystem impl + `mountFiles`). |
+| [`./ayepi-sqlite.md`](./ayepi-sqlite.md) | **SQLite** backends on one file (better-sqlite3): the `@ayepi/work` `Queue`/`Store`/`PubSub` and an `@ayepi/rate` store, shared across processes. |
 | [`./ayepi-redis.md`](./ayepi-redis.md) | **Redis** backends: pub/sub `Broker` (multi-pod fanout) + a `@ayepi/work` `Store`/`PubSub` + a cache store. |
 | [`./ayepi-aws.md`](./ayepi-aws.md) | **AWS** backends: an **SQS** work queue (large payloads offloaded to **S3**) + an **S3** file store/presigner. |
 
@@ -106,7 +107,7 @@ Cross-cutting conventions, true across the whole library:
 - **Rate-limit or cache** → `./ayepi-rate.md` / `./ayepi-cache.md`.
 - **Log with request-scoped context** → `./ayepi-log.md` (+ `./ayepi-otel.md` for request logging).
 - **Emit events to clients across multiple instances** → core `Broker` + `./ayepi-redis.md`.
-- **Run background jobs / a durable queue** → `./ayepi-work.md` (prod backends: `./ayepi-redis.md`, `./ayepi-aws.md`).
+- **Run background jobs / a durable queue** → `./ayepi-work.md` (prod backends: `./ayepi-sqlite.md`, `./ayepi-redis.md`, `./ayepi-aws.md`).
 - **Store & serve files** → `./ayepi-files.md` (S3: `./ayepi-aws.md`).
 - **Deploy** → `./ayepi-node.md` / `./ayepi-bun.md` / `./ayepi-deno.md` (Workers/edge: `./ayepi-core.md`).
 - **Expose as MCP tools / mock the API** → `./ayepi-mcp.md` / `./ayepi-mock.md`.

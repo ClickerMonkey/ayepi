@@ -1,0 +1,65 @@
+{
+  "name": "@ayepi/sqlite",
+  "version": "0.4.1",
+  "description": "SQLite backends for ayepi (better-sqlite3) — the @ayepi/work Queue, Store and PubSub, and an @ayepi/rate store, in one database file",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/sqlite"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/sqlite#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist", "ayepi-*.md"],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "publint": "publint"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@ayepi/rate": "workspace:^",
+    "@ayepi/work": "workspace:^",
+    "zod": "^4.6.7"
+  },
+  "peerDependenciesMeta": {
+    "@ayepi/rate": { "optional": true },
+    "@ayepi/work": { "optional": true }
+  },
+  "devDependencies": {
+    "@ayepi/core": "workspace:*",
+    "@ayepi/rate": "workspace:*",
+    "@ayepi/work": "workspace:*",
+    "@types/better-sqlite3": "^9.6.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "better-sqlite3": "^13.0.3",
+    "publint": "^0.3.0",
+    "tsdown": "^0.12.0",
+    "vitest": "^2.1.8",
+    "zod": "^4.6.7"
+  },
+  "keywords": ["ayepi", "sqlite", "better-sqlite3", "queue", "job-queue", "rate-limit", "work"]
+}

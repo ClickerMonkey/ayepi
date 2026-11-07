@@ -48,7 +48,11 @@ consume budget (don't persist its increment). The bundled
 charges a request it can't admit).
 
 The **algorithm lives in the store**, not in the limiter — that is what keeps the limit
-correct across instances. Implement `RateLimitStore` for any backend (Postgres, DynamoDB,
+correct across instances. A store that can read and write per-key cells atomically (a database
+transaction) can reuse the bundled algorithms: `applyHit(state, key, rule, now, cost)` runs one hit
+against `state = { counters, buckets }`, two Map-like tables (`get`/`set`) of `{ count, reset }`
+window counters and `{ tokens, ts }` token buckets, writing every changed cell back with `set`.
+`memoryStore` runs it on Maps; `@ayepi/sqlite`'s `sqliteRateStore` on rows inside one transaction. Implement `RateLimitStore` for any backend (Postgres, DynamoDB,
 Memcached, …); only `consume` is required.
 
 ### `memoryStore` (default, bundled)

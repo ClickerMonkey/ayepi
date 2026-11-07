@@ -551,66 +551,85 @@ export function rateLimitedDoer(opts: RateLimitedDoerOptions): RateLimitedDoer {
 }
 
 /* ============================================================================
- * In-memory store — all three algorithms, single process, zero dependencies.
+ * The algorithms, over a cell port — the in-memory store runs them on Maps, a database store on rows.
  * ==========================================================================*/
 
-interface Counter {
-  count: number;
-  reset: number;
+/** A window's running total (`fixed-window`, and each bucket of `sliding-window`), and when the window ends (epoch ms). */
+export interface RateCounter {
+  readonly count: number;
+  readonly reset: number;
 }
-interface Bucket {
-  tokens: number;
-  ts: number;
+/** A token bucket's level, as of `ts` (epoch ms). */
+export interface RateBucket {
+  readonly tokens: number;
+  readonly ts: number;
+}
+/** A per-key table of cells an algorithm reads and writes back. A `Map` is one. */
+export interface RateCells<V> {
+  get(key: string): V | undefined;
+  set(key: string, value: V): void;
+}
+/** The cells {@link applyHit} works on: window counters and token buckets. */
+export interface RateState {
+  readonly counters: RateCells<RateCounter>;
+  readonly buckets: RateCells<RateBucket>;
 }
 
-function fixedWindow(counters: Map<string, Counter>, key: string, rule: RateLimitRule, now: number, cost: number): RateLimitResult {
-  let e = counters.get(key);
-  if (!e || e.reset <= now) {
-    e = { count: 0, reset: now + rule.window };
-    counters.set(key, e);
+/**
+ * Run one hit of weight `cost` for `key` under `rule` at `now` against `state`: the single implementation of all three
+ * algorithms, which {@link memoryStore} runs on Maps and a database-backed {@link RateLimitStore} can run on rows
+ * (inside one transaction, so the read and the write-back are atomic). Every changed cell is written back with `set`.
+ */
+export function applyHit(state: RateState, key: string, rule: RateLimitRule, now: number, cost: number): RateLimitResult {
+  switch (rule.algorithm) {
+    case 'sliding-window':
+      return slidingWindow(state.counters, key, rule, now, cost);
+    case 'token-bucket':
+      return tokenBucket(state.buckets, key, rule, now, cost);
+    default:
+      return fixedWindow(state.counters, key, rule, now, cost);
   }
-  const allowed = e.count + cost <= rule.limit;
-  if (allowed || rule.countRejected) {e.count += cost;} // by default a rejected hit doesn't consume budget
-  const reset = e.reset - now;
-  return { allowed, limit: rule.limit, remaining: Math.max(0, rule.limit - e.count), reset, retryAfter: allowed ? 0 : reset };
 }
 
-function slidingWindow(counters: Map<string, Counter>, key: string, rule: RateLimitRule, now: number, cost: number): RateLimitResult {
+function fixedWindow(counters: RateCells<RateCounter>, key: string, rule: RateLimitRule, now: number, cost: number): RateLimitResult {
+  const found = counters.get(key);
+  const e = !found || found.reset <= now ? { count: 0, reset: now + rule.window } : found;
+  const allowed = e.count + cost <= rule.limit;
+  const count = allowed || rule.countRejected ? e.count + cost : e.count; // by default a rejected hit doesn't consume budget
+  counters.set(key, { count, reset: e.reset });
+  const reset = e.reset - now;
+  return { allowed, limit: rule.limit, remaining: Math.max(0, rule.limit - count), reset, retryAfter: allowed ? 0 : reset };
+}
+
+function slidingWindow(counters: RateCells<RateCounter>, key: string, rule: RateLimitRule, now: number, cost: number): RateLimitResult {
   const windowStart = Math.floor(now / rule.window) * rule.window;
   const curKey = `${key}|${windowStart}`;
   const prevKey = `${key}|${windowStart - rule.window}`;
-  let cur = counters.get(curKey);
-  if (!cur || cur.reset <= now) {
-    cur = { count: 0, reset: windowStart + rule.window };
-    counters.set(curKey, cur);
-  }
+  const found = counters.get(curKey);
+  const cur = !found || found.reset <= now ? { count: 0, reset: windowStart + rule.window } : found;
   // prevKey already encodes the immediately-previous window, so its count always applies
   const prevCount = counters.get(prevKey)?.count ?? 0;
   const weight = (rule.window - (now - windowStart)) / rule.window;
   // would admitting this hit stay within the limit?
   const allowed = prevCount * weight + cur.count + cost <= rule.limit;
-  if (allowed || rule.countRejected) {cur.count += cost;} // by default a rejected hit doesn't carry into the next window
-  const weighted = prevCount * weight + cur.count;
+  const count = allowed || rule.countRejected ? cur.count + cost : cur.count; // by default a rejected hit doesn't carry into the next window
+  counters.set(curKey, { count, reset: cur.reset });
+  const weighted = prevCount * weight + count;
   const reset = windowStart + rule.window - now;
   return { allowed, limit: rule.limit, remaining: Math.max(0, Math.floor(rule.limit - weighted)), reset, retryAfter: allowed ? 0 : reset };
 }
 
-function tokenBucket(buckets: Map<string, Bucket>, key: string, rule: RateLimitRule, now: number, cost: number): RateLimitResult {
+function tokenBucket(buckets: RateCells<RateBucket>, key: string, rule: RateLimitRule, now: number, cost: number): RateLimitResult {
   const cap = rule.limit;
   const refillPerMs = rule.limit / rule.window;
-  let b = buckets.get(key);
-  if (!b) {b = { tokens: cap, ts: now };}
-  b.tokens = Math.min(cap, b.tokens + (now - b.ts) * refillPerMs);
-  b.ts = now;
-  let allowed = false;
-  if (b.tokens >= cost) {
-    b.tokens -= cost;
-    allowed = true;
-  } // a rejected request never has the tokens to charge, so `countRejected` is moot here
-  buckets.set(key, b);
-  const remaining = Math.floor(b.tokens);
-  const retryAfter = allowed ? 0 : Math.ceil((cost - b.tokens) / refillPerMs);
-  const reset = Math.ceil((cap - b.tokens) / refillPerMs);
+  const b = buckets.get(key) ?? { tokens: cap, ts: now };
+  const level = Math.min(cap, b.tokens + (now - b.ts) * refillPerMs);
+  const allowed = level >= cost; // a rejected request never has the tokens to charge, so `countRejected` is moot here
+  const tokens = allowed ? level - cost : level;
+  buckets.set(key, { tokens, ts: now });
+  const remaining = Math.floor(tokens);
+  const retryAfter = allowed ? 0 : Math.ceil((cost - tokens) / refillPerMs);
+  const reset = Math.ceil((cap - tokens) / refillPerMs);
   return { allowed, limit: cap, remaining, reset, retryAfter };
 }
 
@@ -644,8 +663,9 @@ export interface MemoryStoreOptions {
 export function memoryStore(opts: MemoryStoreOptions = {}): RateLimitStore {
   const sweepEvery = opts.sweepEvery ?? SWEEP_EVERY;
   const idleMs = opts.idleMs ?? BUCKET_IDLE_MS;
-  const counters = new Map<string, Counter>();
-  const buckets = new Map<string, Bucket>();
+  const counters = new Map<string, RateCounter>();
+  const buckets = new Map<string, RateBucket>();
+  const state: RateState = { counters, buckets };
   let ops = 0;
   const sweep = (now: number) => {
     if (++ops % sweepEvery !== 0) {return;}
@@ -655,14 +675,7 @@ export function memoryStore(opts: MemoryStoreOptions = {}): RateLimitStore {
   return {
     consume(key, rule, now, cost) {
       sweep(now);
-      switch (rule.algorithm) {
-        case 'sliding-window':
-          return slidingWindow(counters, key, rule, now, cost);
-        case 'token-bucket':
-          return tokenBucket(buckets, key, rule, now, cost);
-        default:
-          return fixedWindow(counters, key, rule, now, cost);
-      }
+      return applyHit(state, key, rule, now, cost);
     },
     reset(key) {
       counters.delete(key);
