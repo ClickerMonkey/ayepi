@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import {
-  JsonRpcId, MCP_PARAMS,
+  JsonRpcId, MCP_PARAMS, McpClientNotifications,
   type McpMethod, type McpNotificationMethod, type McpParamsOf, type McpPrompt, type McpPromptResult, type McpResourceContents,
   type McpResourcePage, type McpResourceTemplate, type McpResultOf, type McpServerCapabilities, type McpTool, type McpToolResult,
 } from './shapes';
@@ -92,9 +92,36 @@ export function textResult(text: string): McpToolResult {
   return { content: [{ type: 'text', text }] };
 }
 
+/**
+ * A successful tool result carrying a JSON value: its JSON text, and the value itself as `structuredContent` when it
+ * is an object (MCP's structured content is always an object).
+ */
+export function jsonResult(value: unknown): McpToolResult {
+  const text = textResult(JSON.stringify(value ?? null));
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? { ...text, structuredContent: value } : text;
+}
+
 /** A failed tool result (`isError: true`) carrying the message the model reads. */
 export function errorResult(text: string): McpToolResult {
   return { content: [{ type: 'text', text }], isError: true };
+}
+
+/* ---- callers ---------------------------------------------------------------- */
+
+/** Who a transport let in: the subject its authorizer named, and the scopes granted. */
+export interface McpAuthInfo {
+  /** Who is calling (a token's owner, a route's name). */
+  readonly subject: string;
+  /** What the caller may do, as the authorizer granted it. */
+  readonly scopes: readonly string[];
+}
+
+/** Who a source is answering: the client session and, when the transport checked one, the caller's auth. */
+export interface McpCaller {
+  /** The client session the request came in on (`''` for a transport with one session). */
+  readonly session: string;
+  /** The caller's auth, when the transport has an authorizer. */
+  readonly auth: McpAuthInfo | undefined;
 }
 
 /* ---- sources ---------------------------------------------------------------- */
@@ -108,9 +135,9 @@ export interface McpToolSource {
   tools(): readonly McpTool[];
   /**
    * Run a tool. `undefined` means there is no such tool (a `-32602` error to the client); a thrown error becomes an
-   * `isError` result.
+   * `isError` result. `caller` says who asked.
    */
-  call(name: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<McpToolResult | undefined>;
+  call(name: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal, caller: McpCaller): Promise<McpToolResult | undefined>;
   /**
    * Hear about the tool list changing. A source that has this advertises `tools.listChanged` and the server sends
    * `notifications/tools/list_changed` each time. Returns an unsubscribe function.
@@ -120,12 +147,12 @@ export interface McpToolSource {
 
 /** Where an MCP server's resources come from. */
 export interface McpResourceSource {
-  /** A page of the resources offered; `cursor` is a page's `nextCursor`. */
-  list(cursor: string | undefined, signal: AbortSignal): Promise<McpResourcePage>;
+  /** A page of the resources offered; `cursor` is a page's `nextCursor`. `caller` says who asked. */
+  list(cursor: string | undefined, signal: AbortSignal, caller: McpCaller): Promise<McpResourcePage>;
   /** The URI templates a client can fill to read resources that aren't listed. None when absent. */
   templates?(signal: AbortSignal): readonly McpResourceTemplate[] | Promise<readonly McpResourceTemplate[]>;
-  /** Read a resource. `undefined` means there is none at the URI (a `-32002` error to the client). */
-  read(uri: string, signal: AbortSignal): Promise<readonly McpResourceContents[] | undefined>;
+  /** Read a resource. `undefined` means there is none at the URI (a `-32002` error to the client). `caller` says who asked. */
+  read(uri: string, signal: AbortSignal, caller: McpCaller): Promise<readonly McpResourceContents[] | undefined>;
   /**
    * Hear about one resource changing until the returned function is called. A source that has this advertises
    * `resources.subscribe`: a client that subscribes to a URI gets `notifications/resources/updated` for it.
@@ -141,9 +168,9 @@ export interface McpPromptSource {
   prompts(): readonly McpPrompt[];
   /**
    * Fill a prompt. `undefined` means there is no such prompt (a `-32602` error). The server checks the prompt's
-   * required arguments are present before calling this.
+   * required arguments are present before calling this. `caller` says who asked.
    */
-  get(name: string, args: Readonly<Record<string, string>>, signal: AbortSignal): Promise<McpPromptResult | undefined>;
+  get(name: string, args: Readonly<Record<string, string>>, signal: AbortSignal, caller: McpCaller): Promise<McpPromptResult | undefined>;
   /** Hear about the prompt list changing (advertises `prompts.listChanged`). Returns an unsubscribe function. */
   onChange?(listener: () => void): () => void;
 }
@@ -171,6 +198,8 @@ export interface McpHandleOptions {
   readonly signal?: AbortSignal;
   /** The client session the message came in on; resource subscriptions belong to it. Default: the sole session. */
   readonly session?: string;
+  /** Who the transport let in, passed on to the sources. */
+  readonly auth?: McpAuthInfo;
 }
 
 /** Hears a server notification; `session` is the one session it is for, or `undefined` for every session. */
@@ -217,7 +246,7 @@ class McpFault extends Error {
 interface Call<M extends McpMethod> {
   readonly params: McpParamsOf<M>;
   readonly signal: AbortSignal;
-  readonly session: string;
+  readonly caller: McpCaller;
 }
 
 /** The server's answer to every request method. */
@@ -247,7 +276,9 @@ function missingArguments(prompt: McpPrompt, args: Readonly<Record<string, strin
  *   isn't there is `-32002`; a tool that throws is an `isError` result; any other failure is `-32603`.
  * - any other request → `-32601`. A message that is not JSON-RPC → `-32600`.
  *
- * Notifications (`notifications/initialized`, `notifications/cancelled`, …) and client responses get no answer.
+ * Notifications and client responses get no answer. `notifications/cancelled` aborts the signal of the request it
+ * names in the same session (sources see it as their `signal`); every other notification is ignored. The caller —
+ * the session and, when the transport checked it, the auth — reaches every source call.
  */
 export function mcpSourceServer(sources: McpSources, opts: McpToolServerOptions = {}): McpServer {
   const serverInfo = opts.serverInfo ?? DEFAULT_SERVER_INFO;
@@ -294,25 +325,25 @@ export function mcpSourceServer(sources: McpSources, opts: McpToolServerOptions 
     }),
     'ping': () => ({}),
     'tools/list': () => ({ tools: [...offered(sources.tools, 'tools/list').tools()] }),
-    'tools/call': async ({ params, signal }) => {
+    'tools/call': async ({ params, signal, caller }) => {
       const tools = offered(sources.tools, 'tools/call');
       let result: McpToolResult | undefined;
       try {
-        result = await tools.call(params.name, params.arguments ?? {}, signal);
+        result = await tools.call(params.name, params.arguments ?? {}, signal, caller);
       } catch (error) {
         result = errorResult(messageOf(error));
       }
       if (result === undefined) { throw new McpFault(JSON_RPC_ERRORS.invalidParams, `unknown tool "${params.name}"`); }
       return result;
     },
-    'resources/list': ({ params, signal }) => offered(sources.resources, 'resources/list').list(params?.cursor, signal),
+    'resources/list': ({ params, signal, caller }) => offered(sources.resources, 'resources/list').list(params?.cursor, signal, caller),
     'resources/templates/list': async ({ signal }) => ({ resourceTemplates: [...await offered(sources.resources, 'resources/templates/list').templates?.(signal) ?? []] }),
-    'resources/read': async ({ params, signal }) => {
-      const contents = await offered(sources.resources, 'resources/read').read(params.uri, signal);
+    'resources/read': async ({ params, signal, caller }) => {
+      const contents = await offered(sources.resources, 'resources/read').read(params.uri, signal, caller);
       if (contents === undefined) { throw new McpFault(JSON_RPC_ERRORS.resourceNotFound, `resource not found: ${params.uri}`); }
       return { contents: [...contents] };
     },
-    'resources/subscribe': ({ params, session }) => {
+    'resources/subscribe': ({ params, caller: { session } }) => {
       const watch = watcher('resources/subscribe');
       const held = subscriptions.get(session) ?? new Map<string, () => void>();
       subscriptions.set(session, held);
@@ -321,7 +352,7 @@ export function mcpSourceServer(sources: McpSources, opts: McpToolServerOptions 
       }
       return {};
     },
-    'resources/unsubscribe': ({ params, session }) => {
+    'resources/unsubscribe': ({ params, caller: { session } }) => {
       watcher('resources/unsubscribe');
       const held = subscriptions.get(session);
       held?.get(params.uri)?.();
@@ -329,7 +360,7 @@ export function mcpSourceServer(sources: McpSources, opts: McpToolServerOptions 
       return {};
     },
     'prompts/list': () => ({ prompts: [...offered(sources.prompts, 'prompts/list').prompts()] }),
-    'prompts/get': async ({ params, signal }) => {
+    'prompts/get': async ({ params, signal, caller }) => {
       const prompts = offered(sources.prompts, 'prompts/get');
       const args = params.arguments ?? {};
       const unknown = new McpFault(JSON_RPC_ERRORS.invalidParams, `unknown prompt "${params.name}"`);
@@ -337,21 +368,33 @@ export function mcpSourceServer(sources: McpSources, opts: McpToolServerOptions 
       if (prompt === undefined) { throw unknown; }
       const missing = missingArguments(prompt, args);
       if (missing.length > 0) { throw new McpFault(JSON_RPC_ERRORS.invalidParams, `prompt "${params.name}" needs ${missing.join(', ')}`); }
-      const result = await prompts.get(params.name, args, signal);
+      const result = await prompts.get(params.name, args, signal, caller);
       if (result === undefined) { throw unknown; }
       return result;
     },
   };
 
   /** Run one method's handler with its params checked against the method's schema. */
-  async function dispatch<M extends McpMethod>(method: M, raw: unknown, signal: AbortSignal, session: string): Promise<McpResultOf<M>> {
+  async function dispatch<M extends McpMethod>(method: M, raw: unknown, signal: AbortSignal, caller: McpCaller): Promise<McpResultOf<M>> {
     const params = MCP_PARAMS[method].safeParse(raw);
     if (!params.success) { throw new McpFault(JSON_RPC_ERRORS.invalidParams, `bad params for ${method}: ${z.prettifyError(params.error)}`); }
     const handler: (call: Call<M>) => McpResultOf<M> | Promise<McpResultOf<M>> = handlers[method];
-    return handler({ params: params.data, signal, session });
+    return handler({ params: params.data, signal, caller });
   }
 
   const isMethod = (method: string): method is McpMethod => Object.hasOwn(MCP_PARAMS, method);
+
+  /** Requests being answered, by session and id, so `notifications/cancelled` can stop them; and all of them, for `close`. */
+  const running = new Map<string, AbortController>();
+  const answering = new Set<AbortController>();
+  const runningKey = (session: string, id: JsonRpcId | null): string => `${session} ${JSON.stringify(id)}`;
+
+  /** Act on a client notification: `notifications/cancelled` stops the request it names. Every other one is ignored. */
+  function hear(method: string, params: unknown, session: string): void {
+    if (method !== 'notifications/cancelled') { return; }
+    const cancelled = McpClientNotifications['notifications/cancelled'].safeParse(params);
+    if (cancelled.success) { running.get(runningKey(session, cancelled.data.requestId))?.abort(cancelled.data.reason ?? 'cancelled by the client'); }
+  }
 
   async function handle(message: unknown, options: McpHandleOptions = {}): Promise<JsonRpcResponse | null> {
     const request = JsonRpcRequest.safeParse(message);
@@ -359,14 +402,27 @@ export function mcpSourceServer(sources: McpSources, opts: McpToolServerOptions 
       return JsonRpcResponseMessage.safeParse(message).success ? null : rpcError(null, JSON_RPC_ERRORS.invalidRequest, 'invalid JSON-RPC request');
     }
     const { id, method, params } = request.data;
-    if (id === undefined) { return null; }
-    if (!isMethod(method)) { return rpcError(id, JSON_RPC_ERRORS.methodNotFound, `method not found: ${method}`); }
-    try {
-      const result: unknown = await dispatch(method, params, options.signal ?? new AbortController().signal, options.session ?? SOLE_SESSION);
-      return { jsonrpc: '2.0', id, result };
-    } catch (error) {
-      return rpcError(id, error instanceof McpFault ? error.code : JSON_RPC_ERRORS.internal, messageOf(error));
+    const caller: McpCaller = { session: options.session ?? SOLE_SESSION, auth: options.auth };
+    if (id === undefined) {
+      hear(method, params, caller.session);
+      return null;
     }
+    if (!isMethod(method)) { return rpcError(id, JSON_RPC_ERRORS.methodNotFound, `method not found: ${method}`); }
+    const key = runningKey(caller.session, id);
+    const stop = new AbortController();
+    running.set(key, stop);
+    answering.add(stop);
+    let answer: JsonRpcResponse;
+    try {
+      const signal = options.signal === undefined ? stop.signal : AbortSignal.any([options.signal, stop.signal]);
+      const result: unknown = await dispatch(method, params, signal, caller);
+      answer = { jsonrpc: '2.0', id, result };
+    } catch (error) {
+      answer = rpcError(id, error instanceof McpFault ? error.code : JSON_RPC_ERRORS.internal, messageOf(error));
+    }
+    answering.delete(stop);
+    if (running.get(key) === stop) { running.delete(key); }
+    return answer;
   }
 
   return {
@@ -379,6 +435,9 @@ export function mcpSourceServer(sources: McpSources, opts: McpToolServerOptions 
     endSession,
     close() {
       listeners.clear();
+      for (const stop of answering) { stop.abort('the server closed'); }
+      answering.clear();
+      running.clear();
       for (const stop of stops) { stop?.(); }
       for (const session of [...subscriptions.keys()]) { endSession(session); }
     },

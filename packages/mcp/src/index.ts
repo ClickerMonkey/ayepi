@@ -13,8 +13,12 @@
  * - {@link mcpToolServer} / {@link mcpServer}: an {@link McpServer} that {@link McpServer.handle | handles} one
  *   JSON-RPC 2.0 message (`initialize`, `ping`, `tools/list`, `tools/call`) and sends
  *   `notifications/tools/list_changed` when its source's tools change.
- * - Transports: {@link serveStdio} (newline-delimited JSON over an injected reader/writer) and {@link mcpHttp}
- *   (Streamable HTTP as a web-standard `fetch` handler).
+ * - {@link mcpSourceServer}: a server over any tool, resource and prompt sources, such as an {@link McpToolSet}
+ *   (tools defined at runtime) or views and unions over shared sources ({@link McpToolView}, {@link McpToolUnion}, …).
+ * - Transports: {@link serveStdio} (newline-delimited JSON over an injected reader/writer), {@link mcpHttp}
+ *   (Streamable HTTP as a web-standard `fetch` handler, optionally behind an authorizer such as {@link BearerAuth}),
+ *   and {@link McpRouter} (many Streamable HTTP endpoints by path).
+ * - {@link McpClient}: a typed client over HTTP, stdio, or in process ({@link McpMemoryClientTransport}).
  *
  * The protocol core does no I/O: `handle(message)` takes an already parsed object and returns a plain response
  * object (or `null` for notifications), so it is unit-testable without any transport.
@@ -37,22 +41,33 @@ import { errorResult, mcpToolServer, textResult, type McpServer, type McpToolSer
 import type { McpTool } from './shapes';
 
 export {
-  JsonRpcId, McpTool, McpToolResult, McpContent, McpResource, McpResourceTemplate, McpResourcePage, McpResourceContents,
+  JsonRpcId, McpTool, McpToolAnnotations, McpToolResult, McpClientNotifications, McpContent, McpResource, McpResourceTemplate, McpResourcePage, McpResourceContents,
   McpTextContents, McpBlobContents, McpPrompt, McpPromptArgument, McpPromptMessage, McpPromptResult, McpImplementation,
   McpServerCapabilities, McpInitializeResult, McpResults, McpParams, McpNotifications, MCP_RESULTS, MCP_PARAMS,
   type McpMethod, type McpResultOf, type McpParamsOf, type McpNotificationMethod,
 } from './shapes';
 export {
   MCP_PROTOCOL_VERSIONS, JSON_RPC_ERRORS, JsonRpcRequest, JsonRpcError, JsonRpcResponseMessage, mcpSourceServer, mcpToolServer,
-  isProtocolVersion, rpcError, textResult, errorResult, messageOf,
+  isProtocolVersion, rpcError, textResult, jsonResult, errorResult, messageOf,
   type McpProtocolVersion, type JsonRpcSuccess, type JsonRpcFailure, type JsonRpcResponse, type JsonRpcNotification,
   type McpToolSource, type McpResourceSource, type McpPromptSource, type McpSources, type McpToolServerOptions,
-  type McpHandleOptions, type McpNotificationListener, type McpServer,
+  type McpHandleOptions, type McpNotificationListener, type McpServer, type McpAuthInfo, type McpCaller,
 } from './protocol';
+export { BearerAuth, bearerToken, type McpAuthorizer, type McpAuthDecision, type BearerSecret } from './auth';
+export { McpRouter, type McpRouterOptions } from './router';
+export {
+  McpToolSet, MCP_TOOL_NAME, mcpToolName, invalidArgumentsResult,
+  type McpToolContext, type McpToolRun, type McpJsonToolDefinition, type McpZodToolDefinition,
+} from './toolset';
+export {
+  McpToolView, McpPromptView, McpResourceView, McpToolUnion, McpPromptUnion,
+  type McpToolFilter, type McpPromptFilter, type McpResourceFilter,
+} from './views';
+export { McpMemoryClientTransport, type McpMemoryClientOptions } from './memory';
 export { mcpHttp, MCP_SESSION_HEADER, MCP_VERSION_HEADER, type McpHttpOptions, type McpHttpHandler } from './http';
 export { serveStdio, type LineReader, type LineWriter, type ServeStdioOptions } from './stdio';
 export {
-  McpClient, McpError, McpHttpClientTransport, McpStdioClientTransport,
+  McpClient, McpError, McpToolError, McpHttpClientTransport, McpStdioClientTransport,
   type McpClientTransport, type JsonRpcOutgoingRequest, type McpHttpClientOptions, type McpStdioClientOptions,
   type McpNotice, type McpConnectOptions, type McpCallOptions,
 } from './client';

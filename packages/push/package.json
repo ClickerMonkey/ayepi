@@ -1,0 +1,48 @@
+{
+  "name": "@ayepi/push",
+  "version": "0.4.1",
+  "description": "Web push for any runtime — VAPID (RFC 8292) and aes128gcm payload encryption (RFC 8291) on WebCrypto, with zod-first subscription shapes",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickerMonkey/ayepi.git",
+    "directory": "packages/push"
+  },
+  "homepage": "https://github.com/ClickerMonkey/ayepi/tree/main/packages/push#readme",
+  "bugs": {
+    "url": "https://github.com/ClickerMonkey/ayepi/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist", "ayepi-*.md"],
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "publint": "publint"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.8",
+    "publint": "^0.3.0",
+    "tsdown": "^0.12.0",
+    "vitest": "^2.1.8",
+    "zod": "^4.6.7"
+  },
+  "keywords": ["ayepi", "web-push", "push", "vapid", "notifications", "webcrypto"]
+}

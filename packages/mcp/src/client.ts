@@ -20,6 +20,7 @@ import {
 import type { LineReader, LineWriter } from './stdio';
 import { MCP_SESSION_HEADER, MCP_VERSION_HEADER } from './http';
 import { readEvents } from './sse';
+import { Listeners } from './listeners';
 
 /* ---- errors --------------------------------------------------------------- */
 
@@ -34,6 +35,21 @@ export class McpError extends Error {
     this.name = 'McpError';
     this.code = code;
     this.data = data;
+  }
+}
+
+/** A tool answered with `isError: true`, read by {@link McpClient.callToolAs}. Its message is the result's text. */
+export class McpToolError extends Error {
+  /** The tool that failed. */
+  readonly tool: string;
+  /** What it answered. */
+  readonly result: McpToolResult;
+
+  constructor(tool: string, result: McpToolResult) {
+    super(result.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n') || `tool "${tool}" failed`);
+    this.name = 'McpToolError';
+    this.tool = tool;
+    this.result = result;
   }
 }
 
@@ -61,20 +77,6 @@ export interface McpClientTransport {
   listen(): void;
   /** Stop: end the session and fail requests still waiting. */
   close(): Promise<void>;
-}
-
-/** The listeners of server messages, shared by the transports. */
-class Listeners {
-  readonly #listeners = new Set<(message: unknown) => void>();
-
-  add(listener: (message: unknown) => void): () => void {
-    this.#listeners.add(listener);
-    return () => { this.#listeners.delete(listener); };
-  }
-
-  emit(message: unknown): void {
-    for (const listener of [...this.#listeners]) { listener(message); }
-  }
 }
 
 /** The response with an id, if the message is one. */
@@ -105,7 +107,7 @@ export class McpHttpClientTransport implements McpClientTransport {
   readonly #fetch: typeof fetch;
   readonly #headers: McpHttpClientOptions['headers'];
   readonly #events: boolean;
-  readonly #listeners = new Listeners();
+  readonly #listeners = new Listeners<unknown>();
   readonly #stop = new AbortController();
   #session: string | undefined;
   #version: McpProtocolVersion | undefined;
@@ -220,7 +222,7 @@ export interface McpStdioClientOptions {
  */
 export class McpStdioClientTransport implements McpClientTransport {
   readonly #output: LineWriter;
-  readonly #listeners = new Listeners();
+  readonly #listeners = new Listeners<unknown>();
   readonly #waiting = new Map<number | string, { resolve: (message: unknown) => void; reject: (error: Error) => void }>();
   #ended: Error | undefined;
 
@@ -398,6 +400,52 @@ export class McpClient {
   /** Call a tool. A tool that failed answers with `isError: true`, not a throw. */
   callTool(name: string, args: Readonly<Record<string, unknown>> = {}, opts?: McpCallOptions): Promise<McpToolResult> {
     return this.request('tools/call', { name, arguments: { ...args } }, opts);
+  }
+
+  /**
+   * Call a tool and read its value: its `structuredContent` when it has one, else the JSON of its first text block,
+   * checked against `schema`. A tool that failed throws an {@link McpToolError}; a value that isn't JSON or doesn't fit
+   * the schema throws an `Error` naming the tool.
+   */
+  async callToolAs<S extends z.ZodType>(name: string, args: Readonly<Record<string, unknown>>, schema: S, opts?: McpCallOptions): Promise<z.output<S>> {
+    const result = await this.callTool(name, args, opts);
+    if (result.isError === true) { throw new McpToolError(name, result); }
+    const parsed = schema.safeParse(result.structuredContent ?? McpClient.#textJson(name, result));
+    if (!parsed.success) { throw new Error(`the result of tool "${name}" doesn't fit: ${z.prettifyError(parsed.error)}`); }
+    return parsed.data;
+  }
+
+  /**
+   * The next notification with a method: resolves when the server sends one. `signal` gives up waiting (the promise
+   * rejects with its reason).
+   */
+  nextNotification(method: string, opts: McpCallOptions = {}): Promise<McpNotice> {
+    return new Promise<McpNotice>((resolve, reject) => {
+      const signal = opts.signal;
+      const giveUp = (): void => {
+        stop();
+        reject(new Error(`stopped waiting for ${method}`));
+      };
+      const stop = this.onNotification((notice) => {
+        if (notice.method !== method) { return; }
+        stop();
+        signal?.removeEventListener('abort', giveUp);
+        resolve(notice);
+      });
+      if (signal?.aborted === true) { giveUp(); }
+      signal?.addEventListener('abort', giveUp, { once: true });
+    });
+  }
+
+  /** The JSON of a result's first text block. */
+  static #textJson(name: string, result: McpToolResult): unknown {
+    const text = result.content.find((block) => block.type === 'text');
+    if (text === undefined) { throw new Error(`the result of tool "${name}" has no text`); }
+    try {
+      return JSON.parse(text.text);
+    } catch {
+      throw new Error(`the result of tool "${name}" is not JSON: ${text.text.slice(0, 200)}`);
+    }
   }
 
   /** Every listed resource, across pages. */

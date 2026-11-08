@@ -49,7 +49,8 @@ const user = await sdk.call('getUser', { id: 'u1' })    // fully typed, one data
 | [`@ayepi/work`](packages/work) | Type-safe distributed work / job-queue + workflow engine (retries, dependencies, scheduling). | — (in-memory bundled) |
 | [`@ayepi/auth`](packages/auth) | Authentication middleware — typed Bearer (JWT) + Basic auth, signing/verification, OpenAPI security docs. | — (`node:crypto`) |
 | [`@ayepi/otel`](packages/otel) | Observability middleware — request/response logging + trace-context enrichment, per-endpoint overrides. | `@ayepi/log` |
-| [`@ayepi/mcp`](packages/mcp) | Expose any spec as schema-validated [MCP](https://modelcontextprotocol.io) tools, executed against your app. | — |
+| [`@ayepi/mcp`](packages/mcp) | Expose any spec as schema-validated [MCP](https://modelcontextprotocol.io) tools, executed against your app; serve runtime tools, resources and prompts per client, with bearer auth. | — |
+| [`@ayepi/push`](packages/push) | Web push: VAPID signing and `aes128gcm` payload encryption on WebCrypto. | — |
 | [`@ayepi/mock`](packages/mock) | Mock server — generate schema-valid fake data from a spec (deterministic seeding, auto pagination). | — |
 | [`@ayepi/codec`](packages/codec) | Rich JSON codec — round-trips `Date`/`BigInt`/`Map`/`Set`/`Error` and custom types through a string. | none |
 | [`@ayepi/plugin`](packages/plugin) | A plugin system — compose an API from independent plugins (spec + impl + state service + lifecycle + deps) and hot install/uninstall them into a running server. | — |

@@ -13,16 +13,18 @@
  * `initialize` starts a session: its response carries an `Mcp-Session-Id` header that every later request sends back.
  * A request for no session (other than `initialize`) is `400`, for an unknown or ended one `404`. A request whose
  * `MCP-Protocol-Version` header names a version this server doesn't speak is `400`. A body over `maxBody` bytes is
- * `413`; text that isn't JSON is `400` with a `-32700` error.
+ * `413`; text that isn't JSON is `400` with a `-32700` error. With an authorizer, every request is checked first: a
+ * refused one is `401` or `403`, and a session belongs to the subject that started it.
  *
  * @module
  */
 
 import { z } from 'zod';
 import {
-  JSON_RPC_ERRORS, JsonRpcRequest, rpcError,
-  type JsonRpcNotification, type JsonRpcResponse, type McpServer, isProtocolVersion,
+  JSON_RPC_ERRORS, JsonRpcRequest, messageOf, rpcError,
+  type JsonRpcNotification, type JsonRpcResponse, type McpAuthInfo, type McpServer, isProtocolVersion,
 } from './protocol';
+import type { McpAuthorizer } from './auth';
 
 /** The session header (`Mcp-Session-Id`). */
 export const MCP_SESSION_HEADER = 'mcp-session-id';
@@ -44,6 +46,12 @@ export interface McpHttpOptions {
   readonly allowedOrigins?: readonly string[];
   /** Makes session ids (default `crypto.randomUUID()`). */
   readonly sessionId?: () => string;
+  /**
+   * Checks every request before its body is read (see {@link BearerAuth}). A refused request gets the authorizer's
+   * status (`401` with its `WWW-Authenticate` challenge, or `403`). The caller it names reaches the sources, and a
+   * session belongs to the subject that started it: another subject naming it is `404`. Default: everyone may call.
+   */
+  readonly authorize?: McpAuthorizer;
 }
 
 /** A Streamable HTTP endpoint for an {@link McpServer}. */
@@ -57,6 +65,8 @@ export interface McpHttpHandler {
 /** One client's session: the writers of its open event streams. */
 interface Session {
   readonly id: string;
+  /** Who started it (`undefined` without an authorizer). */
+  readonly auth: McpAuthInfo | undefined;
   readonly streams: Set<WritableStreamDefaultWriter<Uint8Array>>;
 }
 
@@ -105,8 +115,8 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
 }
 
-function failure(status: number, code: number, message: string): Response {
-  return json(status, rpcError(null, code, message));
+function failure(status: number, code: number, message: string, headers: Record<string, string> = {}): Response {
+  return json(status, rpcError(null, code, message), headers);
 }
 
 /** Whether a parsed message is an `initialize` request. */
@@ -139,25 +149,25 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
     for (const writer of session.streams) { closeStream(writer); }
   }
 
-  /** The session a request names, or the response that refuses it. */
-  function sessionOf(request: Request): Session | Response {
+  /** The session a request names, or the response that refuses it. A session another subject started is unknown here. */
+  function sessionOf(request: Request, auth: McpAuthInfo | undefined): Session | Response {
     const id = request.headers.get(MCP_SESSION_HEADER);
     if (id === null) { return failure(400, JSON_RPC_ERRORS.invalidRequest, `missing ${MCP_SESSION_HEADER} header`); }
     const session = sessions.get(id);
-    if (session === undefined) { return failure(404, JSON_RPC_ERRORS.invalidRequest, 'unknown or ended session'); }
+    if (session === undefined || session.auth?.subject !== auth?.subject) { return failure(404, JSON_RPC_ERRORS.invalidRequest, 'unknown or ended session'); }
     const version = request.headers.get(MCP_VERSION_HEADER);
     if (version !== null && !isProtocolVersion(version)) { return failure(400, JSON_RPC_ERRORS.invalidRequest, `unsupported protocol version ${version}`); }
     return session;
   }
 
-  async function post(request: Request): Promise<Response> {
+  async function post(request: Request, auth: McpAuthInfo | undefined): Promise<Response> {
     let text: string;
     try {
       text = await readLimited(request, maxBody);
     } catch (error) {
       return error instanceof TooLarge
         ? failure(413, JSON_RPC_ERRORS.invalidRequest, `the body is over ${maxBody} bytes`)
-        : failure(400, JSON_RPC_ERRORS.invalidRequest, `the body could not be read: ${error instanceof Error ? error.message : String(error)}`);
+        : failure(400, JSON_RPC_ERRORS.invalidRequest, `the body could not be read: ${messageOf(error)}`);
     }
     let parsed: unknown;
     try {
@@ -172,29 +182,29 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
     let session: Session;
     if (messages.some(isInitialize)) {
       const id = sessionId();
-      session = { id, streams: new Set() };
+      session = { id, auth, streams: new Set() };
       sessions.set(id, session);
       headers[MCP_SESSION_HEADER] = id;
     } else {
-      const found = sessionOf(request);
+      const found = sessionOf(request, auth);
       if (found instanceof Response) { return found; }
       session = found;
     }
 
     const replies: JsonRpcResponse[] = [];
     for (const message of messages) {
-      const reply = await server.handle(message, { signal: request.signal, session: session.id });
+      const reply = await server.handle(message, { signal: request.signal, session: session.id, ...(auth === undefined ? {} : { auth }) });
       if (reply !== null) { replies.push(reply); }
     }
     if (replies.length === 0) { return new Response(null, { status: 202, headers }); }
     return json(200, batch.success ? replies : replies[0], headers);
   }
 
-  function get(request: Request): Response {
+  function get(request: Request, auth: McpAuthInfo | undefined): Response {
     if (!(request.headers.get('accept') ?? '').includes('text/event-stream')) {
       return new Response(null, { status: 405, headers: { allow: 'POST, DELETE' } });
     }
-    const session = sessionOf(request);
+    const session = sessionOf(request, auth);
     if (session instanceof Response) { return session; }
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
@@ -208,8 +218,8 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
     return new Response(readable, { status: 200, headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' } });
   }
 
-  function remove(request: Request): Response {
-    const session = sessionOf(request);
+  function remove(request: Request, auth: McpAuthInfo | undefined): Response {
+    const session = sessionOf(request, auth);
     if (session instanceof Response) { return session; }
     endSession(session);
     return new Response(null, { status: 204 });
@@ -221,10 +231,18 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
       if (origin !== null && opts.allowedOrigins !== undefined && !opts.allowedOrigins.includes(origin)) {
         return failure(403, JSON_RPC_ERRORS.invalidRequest, `origin ${origin} is not allowed`);
       }
+      let auth: McpAuthInfo | undefined;
+      if (opts.authorize !== undefined) {
+        const decision = await opts.authorize.authorize(request);
+        if (!decision.ok) {
+          return failure(decision.status, JSON_RPC_ERRORS.invalidRequest, decision.message, decision.challenge === undefined ? {} : { 'www-authenticate': decision.challenge });
+        }
+        auth = decision.auth;
+      }
       switch (request.method) {
-        case 'POST': return post(request);
-        case 'GET': return get(request);
-        case 'DELETE': return remove(request);
+        case 'POST': return post(request, auth);
+        case 'GET': return get(request, auth);
+        case 'DELETE': return remove(request, auth);
         default: return new Response(null, { status: 405, headers: { allow: 'GET, POST, DELETE' } });
       }
     },

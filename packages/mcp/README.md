@@ -21,7 +21,7 @@ const mcp = mcpServer(app, api, { serverInfo: { name: 'my-api', version: '1.0.0'
 // one tool per endpoint; inputSchema derived from each endpoint's zod config
 const tools = mcpTools(api);
 
-// handle a JSON-RPC 2.0 message (initialize / ping / tools/list / tools/call)
+// handle a JSON-RPC 2.0 message (initialize / ping / tools/list / tools/call / …)
 const res = await mcp.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
 ```
 
@@ -32,12 +32,19 @@ const res = await mcp.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
   resource and prompt sources: tools that change at runtime (`notifications/tools/list_changed`),
   resources with templates and per-session subscriptions (`notifications/resources/updated`),
   and prompts with checked arguments. `mcpToolServer(source)` is the tools-only form.
-- **`McpClient`** — a typed MCP client over `McpHttpClientTransport` (Streamable HTTP) or
-  `McpStdioClientTransport`, with every answer checked against its method's schema.
+- **`McpToolSet`** — tools defined at runtime from JSON Schema or zod, arguments checked
+  before each run; **`McpToolView` / `McpPromptView` / `McpResourceView`** show the part of a
+  source a filter lets through, and **`McpToolUnion` / `McpPromptUnion`** join sources — so
+  one host serves each client its own slice, with `list_changed` only when that slice changes.
+- **`McpClient`** — a typed MCP client over `McpHttpClientTransport` (Streamable HTTP),
+  `McpStdioClientTransport` or `McpMemoryClientTransport` (in process, for tests), with every
+  answer checked against its method's schema and `callToolAs(name, args, schema)` for typed values.
 - **`serveStdio(server, { input, output })`** — newline-delimited-JSON loop over
   injected I/O (no hard-wired `process.stdin`).
 - **`mcpHttp(server, opts?)`** — Streamable HTTP (sessions, an SSE stream for
-  notifications, a body limit, origin checks) as a web-standard `fetch` handler.
+  notifications, a body limit, origin checks, an optional authorizer such as `BearerAuth`)
+  as a web-standard `fetch` handler; **`McpRouter`** serves many of them by path, each with
+  its own auth.
 
 See [`ayepi-mcp.md`](./ayepi-mcp.md) for the full reference: how inputs become JSON
 Schema, the supported JSON-RPC/MCP methods, filtering/prefixing, and files/streaming

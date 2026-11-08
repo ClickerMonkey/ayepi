@@ -21,7 +21,9 @@ Guidance for working in this repo — a pnpm monorepo of `@ayepi/*` packages.
 - `@ayepi/cache` — response caching (ttl / stale-while-revalidate, per-request vary, byte/entry bounds).
 - `@ayepi/log` — structured logging (AsyncLocalStorage trace context, transports, redaction).
 - `@ayepi/otel` — request/response logging + trace-context enrichment.
-- `@ayepi/mcp` — expose a spec as schema-validated MCP tools.
+- `@ayepi/mcp` — expose a spec as schema-validated MCP tools; serve runtime tools, resources and
+  prompts (views per client, many endpoints by path with bearer auth); a typed MCP client.
+- `@ayepi/push` — web push (VAPID + `aes128gcm` encryption) on WebCrypto.
 - `@ayepi/mock` — a mock server generating schema-valid fake data from a spec.
 - `@ayepi/plugin` — compose an app from installable/uninstallable plugins.
 

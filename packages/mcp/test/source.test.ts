@@ -67,7 +67,11 @@ describe('mcpToolServer over a live source', () => {
     expect(await mcp.handle(rpc('initialize', {}))).toMatchObject({ error: { code: -32602 } });
     const controller = new AbortController();
     await mcp.handle(rpc('tools/call', { name: 'noop' }), { signal: controller.signal });
-    expect(source.signals.at(-1)).toBe(controller.signal);
+    const seen = source.signals.at(-1);
+    expect(seen?.aborted).toBe(false);
+    controller.abort('gone');
+    expect(seen?.aborted).toBe(true);
+    expect(seen?.reason).toBe('gone');
   });
 
   it('turns a throwing tool into an isError result, a failing server into -32603, and acknowledges client responses', async () => {

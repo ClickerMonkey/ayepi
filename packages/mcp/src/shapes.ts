@@ -53,6 +53,21 @@ export type McpContent = z.infer<typeof McpContent>;
 
 /* ---- tools ---------------------------------------------------------------- */
 
+/** Hints about how a tool behaves, for clients deciding what to confirm. Hints only: a client must not trust them from an untrusted server. */
+export const McpToolAnnotations = z.object({
+  /** A human-readable title. */
+  title: z.string().optional(),
+  /** The tool changes nothing. */
+  readOnlyHint: z.boolean().optional(),
+  /** The tool may destroy or overwrite (meaningful when not read-only). */
+  destructiveHint: z.boolean().optional(),
+  /** Calling it again with the same arguments has no further effect. */
+  idempotentHint: z.boolean().optional(),
+  /** The tool reaches the world outside the server (the web, other services). */
+  openWorldHint: z.boolean().optional(),
+});
+export type McpToolAnnotations = z.infer<typeof McpToolAnnotations>;
+
 /** A tool: what an MCP client lists and calls. `inputSchema` is a JSON Schema object of its arguments. */
 export const McpTool = z.object({
   name: z.string(),
@@ -60,6 +75,7 @@ export const McpTool = z.object({
   description: z.string().optional(),
   inputSchema: JsonObject,
   outputSchema: JsonObject.optional(),
+  annotations: McpToolAnnotations.optional(),
 });
 export type McpTool = z.infer<typeof McpTool>;
 
@@ -190,3 +206,9 @@ export const McpNotifications = {
 } as const;
 /** A notification method a server sends. */
 export type McpNotificationMethod = keyof typeof McpNotifications;
+
+/** The notifications a client sends that a server acts on, with their params. */
+export const McpClientNotifications = {
+  /** The client gave up on a request: the server stops it. */
+  'notifications/cancelled': z.object({ requestId: JsonRpcId, reason: z.string().optional() }),
+} as const;

@@ -24,7 +24,10 @@ pnpm add @ayepi/mcp @ayepi/core zod   # @ayepi/core and zod are peer deps
 
 ```ts
 import { spec, endpoint, server } from '@ayepi/core';
-import { McpClient, McpHttpClientTransport, mcpHttp, mcpServer, mcpSourceServer, mcpTools, serveStdio } from '@ayepi/mcp';
+import {
+  McpClient, McpHttpClientTransport, McpMemoryClientTransport, McpRouter, McpToolSet, McpToolView, BearerAuth,
+  mcpHttp, mcpServer, mcpSourceServer, mcpTools, serveStdio, jsonResult,
+} from '@ayepi/mcp';
 import { z } from 'zod';
 ```
 
@@ -54,14 +57,18 @@ Layers, smallest first:
 | `mcpServer(app, spec, opts?)` | an app + spec | `mcpToolServer(specToolSource(app, spec, opts), opts)` |
 | `serveStdio(server, { input, output })` | an `McpServer` + injected I/O | drives the server over newline-delimited JSON |
 | `mcpHttp(server, opts?)` | an `McpServer` | a Streamable HTTP endpoint as a web-standard `fetch` handler |
-| `McpClient.connect(transport, opts)` | an `McpHttpClientTransport` or `McpStdioClientTransport` | a connected client with typed calls |
---- | --- | --- |
-| `mcpTools(spec, opts?)` | a spec | `McpTool[]` (pure, no execution) |
-| `specToolSource(app, spec, opts?)` | an app + spec | an `McpToolSource` that runs tool calls against the app |
-| `mcpToolServer(source, opts?)` | any `McpToolSource` | an `McpServer` that `handle`s JSON-RPC messages and sends notifications |
-| `mcpServer(app, spec, opts?)` | an app + spec | `mcpToolServer(specToolSource(app, spec, opts), opts)` |
-| `serveStdio(server, { input, output })` | an `McpServer` + injected I/O | drives the server over newline-delimited JSON |
-| `mcpHttp(server, opts?)` | an `McpServer` | a Streamable HTTP endpoint as a web-standard `fetch` handler |
+| `McpRouter` | `McpServer`s by path, each with its own options (e.g. a `BearerAuth`) | one `fetch` handler serving many endpoints |
+| `McpClient.connect(transport, opts)` | an `McpHttpClientTransport`, `McpStdioClientTransport` or `McpMemoryClientTransport` | a connected client with typed calls |
+
+Building blocks for servers whose offer changes and is sliced per client:
+
+| Export | What it is |
+| --- | --- |
+| `McpToolSet` | a tool source defined at runtime, from JSON Schema or zod, with arguments checked before each run |
+| `McpToolView` / `McpPromptView` / `McpResourceView` | the part of a source a filter lets through; the filter can be replaced while serving |
+| `McpToolUnion` / `McpPromptUnion` | several sources as one; sources come and go while serving |
+| `BearerAuth` | an `McpAuthorizer` over shared secrets, each naming a subject and scopes |
+
 ---
 
 ## `mcpTools(spec, opts?)`
@@ -135,21 +142,32 @@ A server's tools come from a **tool source**. `specToolSource` is the one over a
 other implementation works the same way, including tools that change at runtime.
 
 ```ts
-// McpTool is the shape mcpTools returns (above); McpToolResult is
+// McpTool is { name, title?, description?, inputSchema, outputSchema?, annotations? }, where annotations are the
+// hints { title?, readOnlyHint?, destructiveHint?, idempotentHint?, openWorldHint? }. McpToolResult is
 // { content: McpContent[]; structuredContent?: object; isError?: boolean }, where McpContent is a
 // text, image, audio, embedded resource or resource_link block.
 
+// Who a source is answering: the client session ('' for a single-session transport) and, when the
+// transport has an authorizer, the caller it let in.
+export interface McpAuthInfo { readonly subject: string; readonly scopes: readonly string[] }
+export interface McpCaller { readonly session: string; readonly auth: McpAuthInfo | undefined }
+
 export interface McpToolSource {
   tools(): readonly McpTool[];
-  // undefined: no such tool (a -32602 error); a thrown error becomes an isError result
-  call(name: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<McpToolResult | undefined>;
+  // undefined: no such tool (a -32602 error); a thrown error becomes an isError result.
+  // signal aborts when the client cancels (notifications/cancelled) or goes away.
+  call(name: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal, caller: McpCaller): Promise<McpToolResult | undefined>;
   // optional: a source with change events advertises tools.listChanged
   onChange?(listener: () => void): () => void;
 }
 
-export function textResult(text: string): McpToolResult;  // { content: [{ type: 'text', text }] }
-export function errorResult(text: string): McpToolResult; // ... plus isError: true
+export function textResult(text: string): McpToolResult;   // { content: [{ type: 'text', text }] }
+export function jsonResult(value: unknown): McpToolResult; // its JSON text, plus structuredContent when it is an object
+export function errorResult(text: string): McpToolResult;  // ... plus isError: true
 ```
+
+A source may declare fewer parameters than these (`call(name, args)` is a valid implementation);
+the server always passes all of them.
 
 A source that can change:
 
@@ -172,11 +190,11 @@ const mcp = mcpToolServer(new LiveTools(), { serverInfo: { name: 'live', version
 ```ts
 export interface McpResourceSource {
   // a page of listed resources ({ resources, nextCursor? }); cursor is a page's nextCursor
-  list(cursor: string | undefined, signal: AbortSignal): Promise<McpResourcePage>;
+  list(cursor: string | undefined, signal: AbortSignal, caller: McpCaller): Promise<McpResourcePage>;
   // RFC 6570 URI templates for resources that aren't listed (none when absent)
   templates?(signal: AbortSignal): readonly McpResourceTemplate[] | Promise<readonly McpResourceTemplate[]>;
   // a resource's contents ({ uri, mimeType?, text } or { uri, mimeType?, blob }); undefined: none at the URI (-32002)
-  read(uri: string, signal: AbortSignal): Promise<readonly McpResourceContents[] | undefined>;
+  read(uri: string, signal: AbortSignal, caller: McpCaller): Promise<readonly McpResourceContents[] | undefined>;
   // optional: advertises resources.subscribe; called once per session and URI subscribed to
   watch?(uri: string, onUpdate: () => void): () => void;
   // optional: advertises resources.listChanged
@@ -194,9 +212,127 @@ A subscription belongs to the session it was made in (see `McpHandleOptions.sess
 export interface McpPromptSource {
   prompts(): readonly McpPrompt[]; // { name, title?, description?, arguments?: [{ name, description?, required? }] }
   // undefined: no such prompt (-32602). The server checks required arguments before calling this.
-  get(name: string, args: Readonly<Record<string, string>>, signal: AbortSignal): Promise<McpPromptResult | undefined>;
+  get(name: string, args: Readonly<Record<string, string>>, signal: AbortSignal, caller: McpCaller): Promise<McpPromptResult | undefined>;
   onChange?(listener: () => void): () => void; // advertises prompts.listChanged
 }
+```
+
+---
+
+## `McpToolSet` — tools defined at runtime
+
+A tool source whose tools are defined, replaced and removed while it serves. A tool comes from a
+**JSON Schema** (checked as zod reads it with `z.fromJSONSchema`) or a **zod schema** (its JSON
+Schema derived with `z.toJSONSchema(args, { io: 'input', unrepresentable: 'any' })`, and `run`
+gets the parsed, typed output, defaults applied).
+
+```ts
+export interface McpToolContext { readonly signal: AbortSignal; readonly caller: McpCaller }
+export type McpToolRun<A> = (args: A, context: McpToolContext) => McpToolResult | Promise<McpToolResult>;
+
+// every McpTool field but inputSchema (name, title?, description?, outputSchema?, annotations?), plus:
+export interface McpJsonToolDefinition {
+  readonly inputSchema: z.core.JSONSchema.JSONSchema;
+  readonly validate?: boolean; // default true; false lists the schema without checking against it
+  readonly run: McpToolRun<Readonly<Record<string, unknown>>>;
+}
+export interface McpZodToolDefinition<S extends z.ZodType> {
+  readonly args: S;
+  readonly run: McpToolRun<z.output<S>>;
+}
+
+export class McpToolSet implements McpToolSource {
+  define(def: McpJsonToolDefinition): this;            // add, or replace the tool with that name
+  define<S extends z.ZodType>(def: McpZodToolDefinition<S>): this;
+  remove(name: string): boolean;
+  has(name: string): boolean;
+  clear(): void;
+  batch(changes: (set: this) => void): void;          // one change notice at the end, if anything changed
+  tools(): McpTool[];
+  call(name, args, signal, caller): Promise<McpToolResult | undefined>;
+  onChange(listener: () => void): () => void;
+}
+
+export const MCP_TOOL_NAME: RegExp;                  // /^[A-Za-z0-9_.-]{1,128}$/
+export function mcpToolName(text: string): string;   // other characters become '_', cut to 128 ('_' for '')
+export function invalidArgumentsResult(tool: string, error: z.ZodError): McpToolResult;
+```
+
+- `define` throws for a name outside `MCP_TOOL_NAME`, and for a JSON Schema zod can't read
+  (an external `$ref`, a missing local `$ref`, …) unless `validate: false`.
+- A call whose arguments don't fit the schema doesn't run: it answers an `isError` result,
+  `invalid arguments for tool "<name>":` followed by zod's pretty error, so a model can read it
+  and retry. A run that throws is an `isError` result with its message (the server's rule).
+- Each `define`, `remove` and non-empty `clear` tells the listeners (`tools/list_changed`);
+  inside `batch` (nestable) they hear once at the end. A batch that throws still tells them.
+
+```ts
+const tools = new McpToolSet()
+  .define({ name: 'add', args: z.object({ a: z.number(), b: z.number() }), run: ({ a, b }) => jsonResult({ sum: a + b }) })
+  .define({
+    name: 'echo',
+    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+    annotations: { readOnlyHint: true },
+    run: (args, { caller }) => jsonResult({ ...args, by: caller.auth?.subject }),
+  });
+const server = mcpToolServer(tools);
+```
+
+---
+
+## Views and unions — one endpoint per client
+
+A host with many clients serves each one a slice of one larger offer: build the shared sources
+once, put a view with that client's rules over them, and give each view its own server.
+
+```ts
+export type McpToolFilter = (tool: McpTool) => boolean;
+export class McpToolView implements McpToolSource {
+  constructor(source: McpToolSource, include?: McpToolFilter); // default: every tool
+  setFilter(include: McpToolFilter): void;
+}
+
+export type McpPromptFilter = (prompt: McpPrompt) => boolean;
+export class McpPromptView implements McpPromptSource {
+  constructor(source: McpPromptSource, include?: McpPromptFilter);
+  setFilter(include: McpPromptFilter): void;
+}
+
+export interface McpResourceFilter {
+  uri(uri: string): boolean;                           // listed, read and watched by URI
+  template?(template: McpResourceTemplate): boolean;   // default: every template
+}
+export class McpResourceView implements McpResourceSource {
+  constructor(source: McpResourceSource, filter?: McpResourceFilter);
+  readonly watch?: (uri: string, onUpdate: () => void) => () => void; // present when the source has watch
+  setFilter(filter: McpResourceFilter): void;
+}
+
+export class McpToolUnion implements McpToolSource {
+  constructor(sources?: readonly McpToolSource[]);
+  readonly sources: readonly McpToolSource[];
+  add(source: McpToolSource): void;      // after the others; a source already here is not added again
+  remove(source: McpToolSource): boolean;
+}
+export class McpPromptUnion implements McpPromptSource { /* the same, for prompts */ }
+```
+
+- A view hides what its filter refuses as if it weren't there: a hidden tool or prompt is an
+  unknown one (`-32602`), a hidden URI is not found (`-32002`), and watching a hidden URI
+  watches nothing. A resource view filters each page of its source, so a page can come out
+  shorter; paging follows the source's cursors.
+- Every view and union has `onChange`, so a server over one advertises `listChanged`. A tool or
+  prompt view sends a change on only when **the list it shows** changes: a change to a hidden
+  tool, or a new filter that shows the same list, sends nothing. A resource view passes on its
+  source's changes and tells of every new filter. A view hears its source only while someone
+  listens to it.
+- A union gives a name two sources share to the first; calls go to the source that owns the
+  name. Adding or removing a source, and any source's change, tells the listeners.
+
+```ts
+const everything = new McpToolUnion([hubTools, systemTools]);
+const claude = mcpSourceServer({ tools: new McpToolView(everything, (t) => t.name.startsWith('fs_')) });
+const admin = mcpSourceServer({ tools: everything });
 ```
 
 ---
@@ -265,8 +401,9 @@ export interface McpToolServerOptions {
 }
 
 export interface McpHandleOptions {
-  readonly signal?: AbortSignal; // reaches the source; a transport whose request goes away stops the call
-  readonly session?: string;     // the client session; resource subscriptions belong to it (default: the sole session)
+  readonly signal?: AbortSignal;  // reaches the source; a transport whose request goes away stops the call
+  readonly session?: string;      // the client session; resource subscriptions belong to it (default: the sole session)
+  readonly auth?: McpAuthInfo;    // who the transport let in; reaches the sources as caller.auth
 }
 
 // session: the one session a notification is for, or undefined for every session
@@ -277,7 +414,7 @@ export interface McpServer {
   handle(message: unknown, options?: McpHandleOptions): Promise<JsonRpcResponse | null>;
   onNotification(listener: McpNotificationListener): () => void;
   endSession(session?: string): void; // drop a session's subscriptions
-  close(): void;                      // stop listening to the sources, drop every subscription
+  close(): void;                      // stop listening to the sources, drop every subscription, abort calls in progress
 }
 
 export function mcpSourceServer(sources: McpSources, opts?: McpToolServerOptions): McpServer;
@@ -318,8 +455,11 @@ method's params are checked against `McpParams[method]` before its source is cal
 - **Malformed message** (not an object, wrong `jsonrpc`, non-string `method`, `null`) →
   **`-32600`** with `id: null`.
 - **Notifications** (no `id`) and **responses a client sends** (`{ id, result }` /
-  `{ id, error }`) are not answered: `handle` returns `null`, and a notification's method
-  is not run.
+  `{ id, error }`) are not answered: `handle` returns `null`.
+- **Cancellation**: `notifications/cancelled` with `{ requestId, reason? }` aborts the signal of
+  that request in the same session (its reason is the abort reason, default
+  `cancelled by the client`); other notifications are ignored. The source's `signal` is the
+  caller's `signal` and this cancellation combined.
 - **Server notifications**: a source's `onChange` sends
   `notifications/{tools,resources,prompts}/list_changed` to every session; a watched resource
   sends `notifications/resources/updated` with `{ uri }` to the session that subscribed.
@@ -339,46 +479,6 @@ await mcp.handle({ jsonrpc: '2.0', id: 2, method: 'prompts/get', params: { name:
 
 await mcp.handle({ jsonrpc: '2.0', method: 'notifications/initialized' }); // notification
 // → null  (no response written)
-```
-
---- | --- |
-| `initialize` | `{ protocolVersion, capabilities: { tools: { listChanged } }, serverInfo, instructions? }` |
-| `ping` | `{}` |
-| `tools/list` | `{ tools: McpTool[] }` |
-| `tools/call` | the source's result for `{ name, arguments }` |
-| *anything else* | JSON-RPC error `-32601` (method not found) |
-
-- **Version negotiation**: `MCP_PROTOCOL_VERSIONS` is `['2025-06-18', '2025-03-26', '2024-11-05']`.
-  `initialize` answers with the client's `protocolVersion` when it is one of these, else the
-  first (newest). `isProtocolVersion(v)` checks one. An `initialize` without a
-  `protocolVersion` is `-32602`.
-- **`tools/call`**: params without a string `name` (or with non-object `arguments`) and an
-  unknown tool are JSON-RPC errors **`-32602`** (`unknown tool "<name>"`); a tool that
-  throws is an `isError` result.
-- **Malformed message** (not an object, wrong `jsonrpc`, non-string `method`, `null`) →
-  **`-32600`** with `id: null`. A failure while answering (a source whose `tools()` throws)
-  → **`-32603`**.
-- **Notifications** (no `id`) and **responses a client sends** (`{ id, result }` /
-  `{ id, error }`) are not answered: `handle` returns `null`, and a notification's method
-  is not run.
-- **Server notifications**: when the source's `onChange` fires, every `onNotification`
-  listener gets `{ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }`.
-
-`JSON_RPC_ERRORS` names the codes: `parse` `-32700`, `invalidRequest` `-32600`,
-`methodNotFound` `-32601`, `invalidParams` `-32602`, `internal` `-32603`. The message
-schemas `JsonRpcRequest` / `JsonRpcId` and `rpcError(id, code, message)` are exported for
-transports.
-
-```ts
-await mcp.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-// → { jsonrpc: '2.0', id: 1, result: { tools: [...] } }
-
-await mcp.handle({ jsonrpc: '2.0', method: 'notifications/initialized' }); // notification
-// → null  (no response written)
-
-await mcp.handle({ jsonrpc: '2.0', id: 2, method: 'tools/call',
-  params: { name: 'getUser', arguments: { id: 'u1' } } });
-// → { jsonrpc: '2.0', id: 2, result: { content: [{ type: 'text', text: '{"id":"u1",...}' }] } }
 ```
 
 ---
@@ -423,6 +523,7 @@ export interface McpHttpOptions {
   readonly maxBody?: number;                    // bytes, default 1 MiB
   readonly allowedOrigins?: readonly string[];  // default: every origin
   readonly sessionId?: () => string;            // default crypto.randomUUID()
+  readonly authorize?: McpAuthorizer;           // default: everyone may call
 }
 
 export interface McpHttpHandler {
@@ -461,6 +562,68 @@ isn't JSON is `400` with a `-32700` error. Each refusal carries a JSON-RPC error
 The request's `signal` reaches `handle`, so a client that disconnects stops its tool call,
 and the request's session id is passed as `handle`'s `session`.
 
+### Auth: `McpAuthorizer` and `BearerAuth`
+
+```ts
+export type McpAuthDecision =
+  | { ok: true; auth: McpAuthInfo }
+  | { ok: false; status: 401 | 403; message: string; challenge?: string }; // challenge: the WWW-Authenticate of a 401
+
+export interface McpAuthorizer { authorize(request: Request): Promise<McpAuthDecision> } // headers only, never the body
+
+export interface BearerSecret { readonly secret: string; readonly subject: string; readonly scopes?: readonly string[] }
+export class BearerAuth implements McpAuthorizer {
+  constructor(secrets: readonly BearerSecret[], opts?: { realm?: string }); // realm default 'mcp'
+  set(secrets: readonly BearerSecret[]): Promise<void>;                     // replace them (rotation, revocation)
+}
+export function bearerToken(request: Request): string | undefined;          // the token of 'Authorization: Bearer <token>'
+```
+
+With `authorize`, every request (`POST`, `GET`, `DELETE`) is checked before its body is read.
+A refusal answers the decision's status with a JSON-RPC error body (`message`), plus
+`WWW-Authenticate` when it has a `challenge`. The caller it lets in reaches every source call as
+`caller.auth`, and **a session belongs to the subject that started it**: a request naming
+another subject's session is `404`, as if the session didn't exist.
+
+`BearerAuth` keeps each secret by its SHA-256 digest and looks a token up by its digest, so no
+secret is compared byte by byte. No token is `401` with `Bearer realm="<realm>"`; an unknown one
+`401` with `Bearer realm="<realm>", error="invalid_token"`. Its caller is the secret's
+`{ subject, scopes }` (scopes default `[]`).
+
+---
+
+## `McpRouter` — many endpoints, one handler
+
+```ts
+export interface McpRouterOptions {
+  readonly base?: string;             // every route is under it (default '', the root)
+  readonly defaults?: McpHttpOptions; // every route starts from these
+}
+
+export class McpRouter {
+  constructor(opts?: McpRouterOptions);
+  mount(path: string, server: McpServer, opts?: McpHttpOptions): void; // replaces (unmounts) one already there
+  unmount(path: string): boolean;      // its sessions end, its event streams close
+  server(path: string): McpServer | undefined;
+  paths(): string[];                   // normalized: '/name', or '' for the base itself
+  fetch: (request: Request) => Promise<Response>; // a bound property: pass the router itself as a fetch handler
+  close(): void;                       // unmount everything
+}
+```
+
+Each mounted server is served by its own `mcpHttp`, with the router's `defaults` overridden by
+the route's options. Paths match exactly, ignoring leading and trailing `/`; a request outside
+the base or at a path with nothing mounted is `404` with a JSON-RPC error
+(`no MCP endpoint at <path>`). The router doesn't own the servers: closing one is its maker's job.
+
+```ts
+const router = new McpRouter({ base: '/mcp' });
+router.mount('claude', mcpSourceServer({ tools: new McpToolView(everything, claudeRules) }), {
+  authorize: new BearerAuth([{ secret: claudeSecret, subject: 'claude' }]),
+});
+http.createServer(createRequestListener(router)).listen(4400); // POST http://host:4400/mcp/claude
+```
+
 ---
 
 ## `McpClient` — calling an MCP server
@@ -486,10 +649,20 @@ export class McpClient {
   unsubscribe(uri, opts?): Promise<void>;
   listPrompts(opts?): Promise<McpPrompt[]>;                   // every page
   getPrompt(name, args?, opts?): Promise<McpPromptResult>;
+  // a tool's value: structuredContent, else the JSON of its first text block, checked against schema
+  callToolAs<S extends z.ZodType>(name, args, schema: S, opts?): Promise<z.output<S>>;
   onNotification(listener: (notice: { method: string; params?: unknown }) => void): () => void;
+  nextNotification(method: string, opts?: { signal?: AbortSignal }): Promise<McpNotice>; // the next one with that method
   close(): Promise<void>;
 }
+
+export class McpToolError extends Error { readonly tool: string; readonly result: McpToolResult }
 ```
+
+`callToolAs` throws an `McpToolError` for an `isError` result (its message is the result's text,
+or `tool "<name>" failed` when it has none), and an `Error` naming the tool for a result with no
+text, text that isn't JSON, or a value that doesn't fit the schema. `nextNotification` rejects
+with `stopped waiting for <method>` when its signal aborts.
 
 `connect` sends `initialize`, refuses (and closes) a server that answers with a protocol
 version this package doesn't speak, then sends `notifications/initialized` and starts
@@ -517,6 +690,10 @@ new McpHttpClientTransport(url, {
   events?: boolean,                                              // open the GET event stream (default true)
 });
 new McpStdioClientTransport({ input: LineReader, output: LineWriter }); // e.g. a child process's stdout/stdin
+new McpMemoryClientTransport(server: McpServer, {
+  session?: string,     // default a fresh crypto.randomUUID(): each client is its own session
+  auth?: McpAuthInfo,   // the caller the sources see
+});
 ```
 
 - **`McpHttpClientTransport`** `POST`s each message with
@@ -526,6 +703,11 @@ new McpStdioClientTransport({ input: LineReader, output: LineWriter }); // e.g. 
   `MCP-Protocol-Version` once agreed. After the handshake a `GET` event stream carries server
   notifications (a server that answers it with an error has none). `close` ends that stream
   and `DELETE`s the session. A reply that isn't JSON throws `HTTP <status> from <url>: <text>`.
+- **`McpMemoryClientTransport`** hands each message to the server's `handle` in the same process:
+  the way to test a server end to end with the typed client and no I/O. It hears the server's
+  notifications for every session and for its own once connected. A request whose signal aborts
+  fails at once (the server's call is stopped by the `notifications/cancelled` the client sends);
+  `close` ends its session, and later requests fail with `the client closed`.
 - **`McpStdioClientTransport`** writes one JSON line per message and reads the server's lines,
   matching responses to requests by id; every other line that is JSON goes to `onMessage`.
   When the server's output ends, requests still waiting fail, and so does every later one.
