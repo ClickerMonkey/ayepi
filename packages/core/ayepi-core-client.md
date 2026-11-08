@@ -94,6 +94,34 @@ headers/cookies.
 const sdk = client<typeof api>({ baseUrl, manifest, headers: () => ({ authorization: `Bearer ${getToken()}` }) })
 ```
 
+### Expired credentials (`unauthorized`)
+
+`unauthorized: () => Promise<boolean>` lets the app sign in again when the server refuses a call for its credentials,
+so callers never see that refusal:
+
+- It runs on a **401** to a call made **with credentials**: the `headers` it was sent with (computed when it was
+  sent, also for ws calls) carried `authorization`. Calls made signed out never run it.
+- Calls refused while it is pending **share one run** (one refresh, not one per call).
+- On `true`, each refused call is sent **once more** over its own transport with fresh headers; a second 401 goes to
+  the caller. On `false` (or a throw) the original refusal goes to the caller.
+- A call that **streams up** (typed items or a raw body) is never retried; an item stream is retried only if the
+  refusal came before any item.
+- Over ws, the socket still carries the old token, so the hook should `reconnect()` the transport (below) before it
+  resolves `true`; the retry then queues for the new socket (use `whileDisconnected: 'queue'`).
+
+```ts
+const socket = wsTransport(() => `wss://api.example.dev/ws?access_token=${token.value}`, { whileDisconnected: 'queue' })
+const sdk = client<typeof api>({
+  baseUrl, manifest, ws: socket, prefer: 'ws',
+  headers: () => (token.value ? { authorization: `Bearer ${token.value}` } : {}),
+  unauthorized: async () => {
+    const ok = await refreshTokens()   // the app's own refresh call
+    if (ok) socket.reconnect()
+    return ok
+  },
+})
+```
+
 ## `sdk.call` / `sdk.url` / `sdk.on`
 
 ```ts
@@ -417,6 +445,7 @@ reconnect. An `error` on an open socket is only reported to `onError`.
 interface WsTransport extends ClientWs {
   connect(): void              // open now (otherwise lazy on first send)
   close(): void                // close permanently, stop reconnecting
+  reconnect(): void            // drop the socket and reopen now (URL/protocols read again); no-op after close()
   readonly state: WsState      // 'closed' | 'connecting' | 'open'
 }
 ```

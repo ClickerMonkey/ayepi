@@ -106,6 +106,13 @@ export interface WsTransport extends ClientWs {
   connect(): void;
   /** Close permanently and stop reconnecting. */
   close(): void;
+  /**
+   * Drop the socket and open a new one at once, skipping any backoff wait; the URL (and `protocols`) are read
+   * again, so this is how fresh credentials reach the connection. Calls in flight on the dropped socket fail with
+   * `DISCONNECTED` as on any drop; subscriptions replay and queued frames flush on the new socket. Does nothing
+   * after {@link WsTransport.close}.
+   */
+  reconnect(): void;
   /** Current connection state. */
   readonly state: WsState;
   /** Subscribe to state transitions (multi-subscriber; returns an unsubscribe function). */
@@ -304,6 +311,16 @@ export function wsTransport(url: string | (() => string), opts: WsTransportOptio
       messageCb = cb;
     },
     connect,
+    reconnect() {
+      if (manualClose) {return;}
+      const old = sock;
+      sock = null; // its close event no longer counts (see `ended`)
+      clearHeartbeat();
+      failOpenCalls();
+      old?.close();
+      retries = 0;
+      connect();
+    },
     close() {
       manualClose = true;
       if (reconnectTimer) {clearTimeout(reconnectTimer);}

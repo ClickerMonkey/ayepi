@@ -25,7 +25,7 @@ import { splitPattern, buildParts } from './path';
 import { makeCaller, createCallerContext, type Caller, type CallerOptions, type CallerEndpoint, type ClientCacheOptions } from './caller';
 import { createConnectivity, type Connectivity, type ConnStatus } from './connectivity';
 import { ServedLink, refuseReverse, type Serves } from './served';
-import { REVERSE_ID, parseFrame } from './ws-calls';
+import { REVERSE_ID, parseFrame, type WsFrame } from './ws-calls';
 
 /** Response statuses that must carry a null body (the `Response` constructor rejects a body for these). */
 const NULL_BODY_STATUS = new Set([101, 204, 205, 304]);
@@ -165,6 +165,17 @@ export interface ClientOptions {
   readonly manifest: Manifest | AnySpec;
   /** Default headers, static or computed per request (e.g. a fresh auth token). */
   readonly headers?: Readonly<Record<string, string>> | (() => Readonly<Record<string, string>>);
+  /**
+   * The server refused a call made with credentials (status 401): the session's tokens expired, or the server forgot
+   * them. A call counts as made with credentials when the `headers` it was sent with carried `authorization` (for a
+   * ws call, the headers computed when it was sent). The client awaits the hook once for every call refused at the
+   * same moment (they share one promise); when it resolves `true` (signed in again), each of those calls is sent once
+   * more over its own transport, with fresh headers, and the caller never sees the first refusal. Resolving `false`
+   * (or throwing) lets the refusal through. A call is never retried twice, and a call that sends a stream up (items or
+   * a raw body) is not retried. For ws, the hook is where to `reconnect()` the transport so the socket carries the new
+   * credentials before the retry goes out.
+   */
+  readonly unauthorized?: () => Promise<boolean>;
   /** Override `fetch` (tests / in-memory wiring). */
   readonly fetchImpl?: (req: Request) => Promise<Response>;
   /** Defaults for the per-client {@link caller} caches (`max`/`ttl`/default `store`). */
@@ -258,6 +269,19 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
   // drive connectivity from the ws transport's state when it exposes one (multi-subscriber onState)
   opts.ws?.onState?.((s) => connectivity.report(s === 'open' ? 'online' : 'offline'));
   const baseHeaders = () => (typeof opts.headers === 'function' ? opts.headers() : (opts.headers ?? {}));
+  /** Whether headers carry credentials, so a 401 to a call sent with them may be retried after `unauthorized`. */
+  const credentialed = (headers: Readonly<Record<string, string>>): boolean =>
+    opts.unauthorized !== undefined && Object.keys(headers).some((k) => k.toLowerCase() === 'authorization');
+  /** The one `unauthorized` run shared by every call refused while it's pending. */
+  let recovering: Promise<boolean> | null = null;
+  const recover = (): Promise<boolean> => {
+    const hook = opts.unauthorized;
+    if (!hook) {return Promise.resolve(false);}
+    recovering ??= hook().catch(() => false).finally(() => {
+      recovering = null;
+    });
+    return recovering;
+  };
   const vcfg = (name: string): EndpointConfig | undefined => opts.validate?.endpoints[name]?.cfg;
   const vParse = (name: string, data: unknown): unknown => {
     const c = vcfg(name);
@@ -280,6 +304,13 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
   const listeners = new Map<string, Set<(data: unknown) => void>>();
   /** per-call abort-listener removers, run when a call settles so signals don't leak listeners */
   const abortCleanups = new Map<string, () => void>();
+  /** Call frames that may be sent once more if the server refuses them with 401 (see `unauthorized`), by call id. */
+  const resendable = new Map<string, string>();
+  /** Send a call frame, remembering it for one retry when it was sent with credentials and `retry` allows. */
+  const sendCall = (id: string, frame: string, retry: boolean): void => {
+    if (retry && credentialed(baseHeaders())) {resendable.set(id, frame);}
+    opts.ws?.send(frame);
+  };
   const runCleanup = (id: string) => {
     const c = abortCleanups.get(id);
     if (c) {
@@ -295,6 +326,7 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
     if (!signal) {return;}
     const onAbort = () => {
       abortCleanups.delete(id);
+      resendable.delete(id);
       if (fail(signal.reason)) {opts.ws?.send(JSON.stringify({ id, abort: true }));}
     };
     if (signal.aborted) {
@@ -331,28 +363,44 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
         }
         return;
       }
-      /* a call response carries `$status`; non-2xx throws, mirroring HTTP */
-      const errored = '$status' in frame && !is2xx(frame.$status);
-      if (streamQueues.has(frame.id)) {
-        const q = streamQueues.get(frame.id)!;
-        if ('chunk' in frame) {q.push(frame.chunk);}
-        else if (frame.end === true) {
-          streamQueues.delete(frame.id);
-          runCleanup(frame.id);
-          q.end();
-        } else if (errored) {
-          streamQueues.delete(frame.id);
-          runCleanup(frame.id);
-          q.fail(frameError(frame));
-        }
-      } else if (pending.has(frame.id)) {
-        const p = pending.get(frame.id)!;
-        pending.delete(frame.id);
-        runCleanup(frame.id);
-        if (errored) {p.reject(frameError(frame));}
-        else {p.resolve(frame.data);}
+      const id = frame.id;
+      const again = resendable.get(id);
+      resendable.delete(id);
+      if (again !== undefined && frame.$status === 401) {
+        /* refused for its credentials: hold the call while the app signs in again, then send it once more */
+        void recover().then((signedIn) => {
+          if (!pending.has(id) && !streamQueues.has(id)) {return;} // aborted meanwhile
+          if (signedIn) {ws.send(again);}
+          else {settle(id, frame);}
+        });
+        return;
       }
+      settle(id, frame);
     });
+  }
+  /** Hand a call's response frame to its pending call or item stream. */
+  function settle(id: string, frame: WsFrame): void {
+    /* a call response carries `$status`; non-2xx throws, mirroring HTTP */
+    const errored = '$status' in frame && !is2xx(frame.$status);
+    if (streamQueues.has(id)) {
+      const q = streamQueues.get(id)!;
+      if ('chunk' in frame) {q.push(frame.chunk);}
+      else if (frame.end === true) {
+        streamQueues.delete(id);
+        runCleanup(id);
+        q.end();
+      } else if (errored) {
+        streamQueues.delete(id);
+        runCleanup(id);
+        q.fail(frameError(frame));
+      }
+    } else if (pending.has(id)) {
+      const p = pending.get(id)!;
+      pending.delete(id);
+      runCleanup(id);
+      if (errored) {p.reject(frameError(frame));}
+      else {p.resolve(frame.data);}
+    }
   }
   function clientQueue(): { push(v: unknown): void; end(): void; fail(err: unknown): void; iterate(): AsyncGenerator<unknown, void, undefined> } {
     const buf: unknown[] = [];
@@ -422,7 +470,7 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
         queue.fail(reason);
         return true;
       });
-      opts.ws.send(callFrame(id, m, data));
+      sendCall(id, callFrame(id, m, data), !m.itemsIn);
       if (m.itemsIn) {pumpItems(id, stream);}
       return (async function* () {
         for await (const item of queue.iterate()) {yield vParseItem(name, item);}
@@ -438,7 +486,7 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
         p.reject(reason);
         return true;
       });
-      opts.ws!.send(callFrame(id, m, data));
+      sendCall(id, callFrame(id, m, data), false); // it streams items up: never sent twice
     });
     if (m.itemsIn) {pumpItems(id, stream);}
     return result.then((d) => (m.multi ? d : vParse(name, d)));
@@ -456,7 +504,7 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
         p.reject(reason);
         return true;
       });
-      opts.ws!.send(JSON.stringify({ id, ...payload }));
+      sendCall(id, JSON.stringify({ id, ...payload }), true);
     });
   }
 
@@ -510,7 +558,7 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
     });
   }
 
-  async function httpRequest(m: ManifestEndpoint, data: unknown, callOpts: (CallOptsBase & { stream?: unknown }) | undefined): Promise<Response> {
+  async function httpRequest(m: ManifestEndpoint, data: unknown, callOpts: (CallOptsBase & { stream?: unknown }) | undefined, retried = false): Promise<Response> {
     const { p, q, b, f } = splitData(m, data);
     const stream = callOpts?.stream;
     const url = buildUrl(m, p, q);
@@ -572,6 +620,10 @@ export function client<S extends AnySpec>(opts: ClientOptions): ApiClient<S> {
       throw err; // AbortError (user cancel) or an unexpected error — propagate unchanged
     }
     connectivity.report('online');
+    if (res.status === 401 && !retried && m.streamIn === null && credentialed(headers) && (await recover())) {
+      await res.body?.cancel().catch(() => {});
+      return httpRequest(m, data, callOpts, true); // signed in again: once more, with fresh headers
+    }
     if (!res.ok) {
       const errBody = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } } | Json;
       const env = (errBody as { error?: { code?: string; message?: string } })?.error;
