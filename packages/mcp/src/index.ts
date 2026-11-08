@@ -64,7 +64,10 @@ export {
   type McpToolFilter, type McpPromptFilter, type McpResourceFilter,
 } from './views';
 export { McpMemoryClientTransport, type McpMemoryClientOptions } from './memory';
-export { mcpHttp, MCP_SESSION_HEADER, MCP_VERSION_HEADER, type McpHttpOptions, type McpHttpHandler } from './http';
+export {
+  mcpHttp, MCP_SESSION_HEADER, MCP_VERSION_HEADER,
+  type McpHttpOptions, type McpHttpHandler, type McpHttpSession, type McpSessionEndReason,
+} from './http';
 export { serveStdio, type LineReader, type LineWriter, type ServeStdioOptions } from './stdio';
 export {
   McpClient, McpError, McpToolError, McpHttpClientTransport, McpStdioClientTransport,

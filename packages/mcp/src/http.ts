@@ -10,6 +10,10 @@
  *   through adapters that send headers with the first chunk.
  * - `DELETE` ends a session, and its resource subscriptions with it.
  *
+ * With `idleTimeout`, a session that has gone that long with no request in progress and no event stream open ends on
+ * its own, so a client that went away without `DELETE` doesn't hold its session forever. `onSessionOpened` and
+ * `onSessionEnded` hear each session start and end, and why it ended.
+ *
  * `initialize` starts a session: its response carries an `Mcp-Session-Id` header that every later request sends back.
  * A request for no session (other than `initialize`) is `400`, for an unknown or ended one `404`. A request whose
  * `MCP-Protocol-Version` header names a version this server doesn't speak is `400`. A body over `maxBody` bytes is
@@ -25,6 +29,7 @@ import {
   type JsonRpcNotification, type JsonRpcResponse, type McpAuthInfo, type McpServer, isProtocolVersion,
 } from './protocol';
 import type { McpAuthorizer } from './auth';
+import { McpParams, type McpImplementation } from './shapes';
 
 /** The session header (`Mcp-Session-Id`). */
 export const MCP_SESSION_HEADER = 'mcp-session-id';
@@ -52,7 +57,32 @@ export interface McpHttpOptions {
    * session belongs to the subject that started it: another subject naming it is `404`. Default: everyone may call.
    */
   readonly authorize?: McpAuthorizer;
+  /**
+   * End a session once it has gone this many milliseconds with no request in progress and no event stream open (its
+   * `onSessionEnded` reason is `'idle'`). Default: sessions end only on `DELETE` or {@link McpHttpHandler.close}.
+   */
+  readonly idleTimeout?: number;
+  /** Hears each session start, as its `initialize` arrives (before it is answered). */
+  readonly onSessionOpened?: (session: McpHttpSession) => void;
+  /** Hears each session end, with the reason. */
+  readonly onSessionEnded?: (session: McpHttpSession, reason: McpSessionEndReason) => void;
 }
+
+/** A Streamable HTTP session as {@link McpHttpOptions.onSessionOpened} and {@link McpHttpOptions.onSessionEnded} see it. */
+export interface McpHttpSession {
+  /** The session id (the `Mcp-Session-Id` header). */
+  readonly id: string;
+  /** Who started it (`undefined` without an authorizer). */
+  readonly auth: McpAuthInfo | undefined;
+  /** The client its `initialize` said it was, when it said. */
+  readonly client: McpImplementation | undefined;
+}
+
+/**
+ * Why a session ended: the client sent `DELETE`, it was idle past `idleTimeout`, or the endpoint closed (an
+ * {@link McpHttpHandler.close}, or its route being unmounted).
+ */
+export type McpSessionEndReason = 'deleted' | 'idle' | 'closed';
 
 /** A Streamable HTTP endpoint for an {@link McpServer}. */
 export interface McpHttpHandler {
@@ -62,12 +92,14 @@ export interface McpHttpHandler {
   close(): void;
 }
 
-/** One client's session: the writers of its open event streams. */
+/** One client's session: what the hooks see, the writers of its open event streams, and its idle timer. */
 interface Session {
-  readonly id: string;
-  /** Who started it (`undefined` without an authorizer). */
-  readonly auth: McpAuthInfo | undefined;
+  readonly info: McpHttpSession;
   readonly streams: Set<WritableStreamDefaultWriter<Uint8Array>>;
+  /** Requests in progress on it. */
+  busy: number;
+  /** Ends it once it has been idle long enough; armed only while nothing is in progress and no stream is open. */
+  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 const Batch = z.array(z.unknown()).min(1);
@@ -119,10 +151,19 @@ function failure(status: number, code: number, message: string, headers: Record<
   return json(status, rpcError(null, code, message), headers);
 }
 
-/** Whether a parsed message is an `initialize` request. */
-function isInitialize(message: unknown): boolean {
-  const request = JsonRpcRequest.safeParse(message);
-  return request.success && request.data.method === 'initialize' && request.data.id !== undefined;
+/** The first `initialize` request among parsed messages, if there is one. */
+function initializeIn(messages: readonly unknown[]): JsonRpcRequest | undefined {
+  for (const message of messages) {
+    const request = JsonRpcRequest.safeParse(message);
+    if (request.success && request.data.method === 'initialize' && request.data.id !== undefined) { return request.data; }
+  }
+  return undefined;
+}
+
+/** The client an `initialize` request says it is, if it says. */
+function clientOf(request: JsonRpcRequest): McpImplementation | undefined {
+  const params = McpParams.initialize.safeParse(request.params);
+  return params.success ? params.data.clientInfo : undefined;
 }
 
 /** Serve an {@link McpServer} over MCP Streamable HTTP. */
@@ -138,15 +179,37 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
     for (const session of targets) {
       for (const writer of session.streams) {
         // a stream the client cancelled refuses the write: forget it
-        writer.write(frame).catch(() => { session.streams.delete(writer); });
+        writer.write(frame).catch(() => { dropStream(session, writer); });
       }
     }
   });
 
-  function endSession(session: Session): void {
-    sessions.delete(session.id);
-    server.endSession(session.id);
+  function endSession(session: Session, reason: McpSessionEndReason): void {
+    clearTimeout(session.timer);
+    sessions.delete(session.info.id);
+    server.endSession(session.info.id);
     for (const writer of session.streams) { closeStream(writer); }
+    session.streams.clear();
+    opts.onSessionEnded?.(session.info, reason);
+  }
+
+  /** Stop a session's idle timer: a request or a stream is using it. */
+  function touch(session: Session): void {
+    clearTimeout(session.timer);
+    session.timer = undefined;
+  }
+
+  /** Start a session's idle timer, when there is a timeout, the session is still open and nothing is using it. */
+  function rest(session: Session): void {
+    const idle = opts.idleTimeout;
+    if (idle === undefined || session.busy > 0 || session.streams.size > 0 || sessions.get(session.info.id) !== session) { return; }
+    clearTimeout(session.timer);
+    session.timer = setTimeout(() => { endSession(session, 'idle'); }, idle);
+  }
+
+  /** An event stream is gone: forget it, and let its session rest. */
+  function dropStream(session: Session, writer: WritableStreamDefaultWriter<Uint8Array>): void {
+    if (session.streams.delete(writer)) { rest(session); }
   }
 
   /** The session a request names, or the response that refuses it. A session another subject started is unknown here. */
@@ -154,7 +217,7 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
     const id = request.headers.get(MCP_SESSION_HEADER);
     if (id === null) { return failure(400, JSON_RPC_ERRORS.invalidRequest, `missing ${MCP_SESSION_HEADER} header`); }
     const session = sessions.get(id);
-    if (session === undefined || session.auth?.subject !== auth?.subject) { return failure(404, JSON_RPC_ERRORS.invalidRequest, 'unknown or ended session'); }
+    if (session === undefined || session.info.auth?.subject !== auth?.subject) { return failure(404, JSON_RPC_ERRORS.invalidRequest, 'unknown or ended session'); }
     const version = request.headers.get(MCP_VERSION_HEADER);
     if (version !== null && !isProtocolVersion(version)) { return failure(400, JSON_RPC_ERRORS.invalidRequest, `unsupported protocol version ${version}`); }
     return session;
@@ -180,11 +243,13 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
 
     const headers: Record<string, string> = {};
     let session: Session;
-    if (messages.some(isInitialize)) {
+    const opening = initializeIn(messages);
+    if (opening !== undefined) {
       const id = sessionId();
-      session = { id, auth, streams: new Set() };
+      session = { info: { id, auth, client: clientOf(opening) }, streams: new Set(), busy: 0, timer: undefined };
       sessions.set(id, session);
       headers[MCP_SESSION_HEADER] = id;
+      opts.onSessionOpened?.(session.info);
     } else {
       const found = sessionOf(request, auth);
       if (found instanceof Response) { return found; }
@@ -192,9 +257,16 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
     }
 
     const replies: JsonRpcResponse[] = [];
-    for (const message of messages) {
-      const reply = await server.handle(message, { signal: request.signal, session: session.id, ...(auth === undefined ? {} : { auth }) });
-      if (reply !== null) { replies.push(reply); }
+    session.busy += 1;
+    touch(session);
+    try {
+      for (const message of messages) {
+        const reply = await server.handle(message, { signal: request.signal, session: session.info.id, ...(auth === undefined ? {} : { auth }) });
+        if (reply !== null) { replies.push(reply); }
+      }
+    } finally {
+      session.busy -= 1;
+      rest(session);
     }
     if (replies.length === 0) { return new Response(null, { status: 202, headers }); }
     return json(200, batch.success ? replies : replies[0], headers);
@@ -209,10 +281,11 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     session.streams.add(writer);
+    touch(session);
     // an SSE comment first, so adapters that send headers with the first chunk open the stream right away
-    writer.write(OPENED).catch(() => { session.streams.delete(writer); });
+    writer.write(OPENED).catch(() => { dropStream(session, writer); });
     request.signal.addEventListener('abort', () => {
-      session.streams.delete(writer);
+      dropStream(session, writer);
       closeStream(writer);
     });
     return new Response(readable, { status: 200, headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' } });
@@ -221,7 +294,7 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
   function remove(request: Request, auth: McpAuthInfo | undefined): Response {
     const session = sessionOf(request, auth);
     if (session instanceof Response) { return session; }
-    endSession(session);
+    endSession(session, 'deleted');
     return new Response(null, { status: 204 });
   }
 
@@ -248,7 +321,7 @@ export function mcpHttp(server: McpServer, opts: McpHttpOptions = {}): McpHttpHa
     },
     close() {
       unsubscribe();
-      for (const session of [...sessions.values()]) { endSession(session); }
+      for (const session of [...sessions.values()]) { endSession(session, 'closed'); }
     },
   };
 }

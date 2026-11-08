@@ -524,7 +524,18 @@ export interface McpHttpOptions {
   readonly allowedOrigins?: readonly string[];  // default: every origin
   readonly sessionId?: () => string;            // default crypto.randomUUID()
   readonly authorize?: McpAuthorizer;           // default: everyone may call
+  readonly idleTimeout?: number;                // ms; default: sessions end only on DELETE or close()
+  readonly onSessionOpened?: (session: McpHttpSession) => void;
+  readonly onSessionEnded?: (session: McpHttpSession, reason: McpSessionEndReason) => void;
 }
+
+export interface McpHttpSession {
+  readonly id: string;                           // the Mcp-Session-Id
+  readonly auth: McpAuthInfo | undefined;        // who started it (undefined without an authorizer)
+  readonly client: McpImplementation | undefined; // the clientInfo its initialize sent
+}
+
+export type McpSessionEndReason = 'deleted' | 'idle' | 'closed';
 
 export interface McpHttpHandler {
   fetch(request: Request): Promise<Response>;
@@ -561,6 +572,28 @@ outside `allowedOrigins` is `403` (requests without `Origin` pass); a body over
 isn't JSON is `400` with a `-32700` error. Each refusal carries a JSON-RPC error body.
 The request's `signal` reaches `handle`, so a client that disconnects stops its tool call,
 and the request's session id is passed as `handle`'s `session`.
+
+### Session lifecycle
+
+`onSessionOpened` hears each session as its `initialize` arrives (before it is answered), with
+the subject the authorizer let in and the `clientInfo` the client sent. `onSessionEnded` hears
+each end with its reason: `'deleted'` (the client's `DELETE`), `'idle'` or `'closed'` (the
+handler's `close()`, which is also what `McpRouter.unmount` and mounting over a path do). An
+ended session's resource subscriptions end (`server.endSession(id)`) and its event streams close.
+
+With `idleTimeout`, a session ends once it has gone that many milliseconds with **no request in
+progress and no event stream open**: a long tool call or an open `GET` stream keeps it, and the
+count starts again when the last of them finishes. A client that went away without `DELETE`
+(killed, crashed) so ends on its own instead of holding its session, its subscriptions and the
+hooks' view of it forever; its next request is `404`, as for any ended session.
+
+```ts
+const endpoint = mcpHttp(mcp, {
+  idleTimeout: 30 * 60_000,
+  onSessionOpened: ({ id, client }) => log.info('mcp.session.opened', { id, client: client?.name }),
+  onSessionEnded: ({ id }, reason) => log.info('mcp.session.ended', { id, reason }),
+});
+```
 
 ### Auth: `McpAuthorizer` and `BearerAuth`
 

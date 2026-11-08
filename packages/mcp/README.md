@@ -41,8 +41,9 @@ const res = await mcp.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
   answer checked against its method's schema and `callToolAs(name, args, schema)` for typed values.
 - **`serveStdio(server, { input, output })`** — newline-delimited-JSON loop over
   injected I/O (no hard-wired `process.stdin`).
-- **`mcpHttp(server, opts?)`** — Streamable HTTP (sessions, an SSE stream for
-  notifications, a body limit, origin checks, an optional authorizer such as `BearerAuth`)
+- **`mcpHttp(server, opts?)`** — Streamable HTTP (sessions with an optional idle timeout and
+  open/end hooks, an SSE stream for notifications, a body limit, origin checks, an optional
+  authorizer such as `BearerAuth`)
   as a web-standard `fetch` handler; **`McpRouter`** serves many of them by path, each with
   its own auth.
 
