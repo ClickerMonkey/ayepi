@@ -9,11 +9,12 @@
 
 import { z } from 'zod';
 import {
-  JsonRpcRequest, JsonRpcResponseMessage, MCP_PROTOCOL_VERSIONS, messageOf,
-  type JsonRpcNotification, type McpProtocolVersion,
+  JSON_RPC_ERRORS, JsonRpcRequest, JsonRpcResponseMessage, MCP_PROTOCOL_VERSIONS, messageOf, rpcError,
+  type JsonRpcNotification, type JsonRpcResponse, type McpProtocolVersion,
 } from './protocol';
 import {
-  MCP_RESULTS,
+  JsonRpcId, MCP_RESULTS, McpClientNotifications, McpElicitRequest,
+  type McpElicitResult, type McpRoot,
   type McpImplementation, type McpInitializeResult, type McpMethod, type McpParamsOf, type McpPrompt, type McpPromptResult,
   type McpResource, type McpResourceContents, type McpResourceTemplate, type McpResultOf, type McpTool, type McpToolResult,
 } from './shapes';
@@ -69,6 +70,8 @@ export interface McpClientTransport {
   request(message: JsonRpcOutgoingRequest, signal: AbortSignal): Promise<unknown>;
   /** Send a notification. */
   notify(message: JsonRpcNotification): Promise<void>;
+  /** Answer a request the server sent (`elicitation/create`, `roots/list`, `ping`). */
+  respond(message: JsonRpcResponse): Promise<void>;
   /** Hear the messages the server sends on its own, unchecked. Returns an unsubscribe function. */
   onMessage(listener: (message: unknown) => void): () => void;
   /** The handshake agreed on this protocol version: every later message carries it. */
@@ -79,8 +82,32 @@ export interface McpClientTransport {
   close(): Promise<void>;
 }
 
+/**
+ * An HTTP answer that is not MCP: the server refused the caller (`401`, `403`) or failed. `wwwAuthenticate` carries
+ * the server's challenge, where an MCP server names its protected-resource metadata for OAuth (see `oauth`).
+ */
+export class McpHttpError extends Error {
+  readonly status: number;
+  /** The `WWW-Authenticate` header, when the server sent one. */
+  readonly wwwAuthenticate: string | undefined;
+
+  constructor(status: number, message: string, wwwAuthenticate: string | undefined) {
+    super(message);
+    this.name = 'McpHttpError';
+    this.status = status;
+    this.wwwAuthenticate = wwwAuthenticate;
+  }
+}
+
+/** Throw an {@link McpHttpError} for a refused caller (`401`, `403`), which has no MCP answer to read. */
+export async function refusedCaller(response: Response, url: string): Promise<void> {
+  if (response.status !== 401 && response.status !== 403) { return; }
+  await response.body?.cancel();
+  throw new McpHttpError(response.status, `HTTP ${response.status} from ${url}`, response.headers.get('www-authenticate') ?? undefined);
+}
+
 /** The response with an id, if the message is one. */
-function responseId(message: unknown): number | string | null | undefined {
+export function responseId(message: unknown): number | string | null | undefined {
   const response = JsonRpcResponseMessage.safeParse(message);
   return response.success ? response.data.id : undefined;
 }
@@ -126,6 +153,7 @@ export class McpHttpClientTransport implements McpClientTransport {
 
   async request(message: JsonRpcOutgoingRequest, signal: AbortSignal): Promise<unknown> {
     const response = await this.#post(message, signal);
+    await refusedCaller(response, this.#url);
     if ((response.headers.get('content-type') ?? '').includes('text/event-stream') && response.body !== null) {
       let answer: unknown;
       await readEvents(response.body, (data) => {
@@ -148,6 +176,12 @@ export class McpHttpClientTransport implements McpClientTransport {
     const response = await this.#post(message, this.#stop.signal);
     await response.body?.cancel();
     if (!response.ok) { throw new Error(`HTTP ${response.status} for ${message.method}`); }
+  }
+
+  async respond(message: JsonRpcResponse): Promise<void> {
+    const response = await this.#post(message, this.#stop.signal);
+    await response.body?.cancel();
+    if (!response.ok) { throw new Error(`HTTP ${response.status} for the answer to request ${String(message.id)}`); }
   }
 
   onMessage(listener: (message: unknown) => void): () => void {
@@ -254,6 +288,10 @@ export class McpStdioClientTransport implements McpClientTransport {
     await this.#output.write(JSON.stringify(message));
   }
 
+  async respond(message: JsonRpcResponse): Promise<void> {
+    await this.#output.write(JSON.stringify(message));
+  }
+
   onMessage(listener: (message: unknown) => void): () => void {
     return this.#listeners.add(listener);
   }
@@ -320,6 +358,76 @@ export interface McpConnectOptions {
   readonly protocolVersion?: McpProtocolVersion;
   /** Gives up on the handshake. */
   readonly signal?: AbortSignal;
+  /** How the client answers the requests a server sends it; the capabilities it advertises follow from these. */
+  readonly handlers?: McpClientHandlers;
+}
+
+/**
+ * How a client answers the requests a server sends it. `ping` is always answered. A server request the client has
+ * no handler for (and `sampling/createMessage`, which this client never offers) gets `-32601`. A handler that throws
+ * answers `-32603` with its message. `signal` aborts when the server cancels its request.
+ */
+export interface McpClientHandlers {
+  /** `elicitation/create`: ask the person to fill a form (advertises the `elicitation` capability). */
+  readonly elicit?: (request: McpElicitRequest, signal: AbortSignal) => Promise<McpElicitResult>;
+  /** `roots/list`: the folders the server may work in (advertises `roots`, with `listChanged`). */
+  readonly roots?: (signal: AbortSignal) => Promise<readonly McpRoot[]>;
+}
+
+/** The capabilities a client with these handlers advertises in `initialize`. */
+function clientCapabilities(handlers: McpClientHandlers): Record<string, object> {
+  return {
+    ...(handlers.elicit === undefined ? {} : { elicitation: {} }),
+    ...(handlers.roots === undefined ? {} : { roots: { listChanged: true } }),
+  };
+}
+
+/** A request the server sent: a JSON-RPC request with a method and an id. */
+const ServerRequest = z.object({ jsonrpc: z.literal('2.0'), id: JsonRpcId, method: z.string(), params: z.unknown().optional() });
+
+/**
+ * Answer the server's requests through `handlers` until the returned function is called. Requests in flight are
+ * aborted when the server cancels them (`notifications/cancelled`) and when answering stops.
+ */
+function answerServer(transport: McpClientTransport, handlers: McpClientHandlers): () => void {
+  const inFlight = new Map<string | number, AbortController>();
+  const answer = async (id: string | number, method: string, params: unknown, signal: AbortSignal): Promise<JsonRpcResponse> => {
+    if (method === 'ping') { return { jsonrpc: '2.0', id, result: {} }; }
+    if (method === 'elicitation/create' && handlers.elicit !== undefined) {
+      const request = McpElicitRequest.safeParse(params);
+      if (!request.success) { return rpcError(id, JSON_RPC_ERRORS.invalidParams, `invalid elicitation: ${z.prettifyError(request.error)}`); }
+      return { jsonrpc: '2.0', id, result: await handlers.elicit(request.data, signal) };
+    }
+    if (method === 'roots/list' && handlers.roots !== undefined) {
+      return { jsonrpc: '2.0', id, result: { roots: [...await handlers.roots(signal)] } };
+    }
+    return rpcError(id, JSON_RPC_ERRORS.methodNotFound, `this client does not answer ${method}`);
+  };
+  const stop = transport.onMessage((message) => {
+    const cancelled = JsonRpcRequest.safeParse(message);
+    if (cancelled.success && cancelled.data.method === 'notifications/cancelled') {
+      const params = McpClientNotifications['notifications/cancelled'].safeParse(cancelled.data.params);
+      if (params.success) { inFlight.get(params.data.requestId)?.abort(params.data.reason); }
+      return;
+    }
+    const request = ServerRequest.safeParse(message);
+    if (!request.success) { return; }
+    const { id, method, params } = request.data;
+    const control = new AbortController();
+    inFlight.set(id, control);
+    void answer(id, method, params, control.signal)
+      .catch((error: unknown) => rpcError(id, JSON_RPC_ERRORS.internal, messageOf(error)))
+      .then(async (response) => {
+        inFlight.delete(id);
+        if (!control.signal.aborted) { await transport.respond(response); }
+      })
+      .catch(() => undefined);
+  });
+  return () => {
+    stop();
+    for (const control of inFlight.values()) { control.abort('the client closed'); }
+    inFlight.clear();
+  };
 }
 
 /** Options for one call. */
@@ -359,27 +467,41 @@ export class McpClient {
   /** What the server answered `initialize` with: its version, capabilities, identity and instructions. */
   readonly server: McpInitializeResult;
   readonly #transport: McpClientTransport;
+  /** Stops answering the server's requests. */
+  readonly #stopAnswering: () => void;
   /** The next request id (`0` was the handshake's). */
   #nextId = 1;
 
-  private constructor(transport: McpClientTransport, server: McpInitializeResult) {
+  private constructor(transport: McpClientTransport, server: McpInitializeResult, stopAnswering: () => void) {
     this.#transport = transport;
     this.server = server;
+    this.#stopAnswering = stopAnswering;
   }
 
-  /** Connect over a transport: the handshake, refusing a server that answers with a version this package doesn't speak. */
+  /**
+   * Connect over a transport: the handshake, refusing a server that answers with a version this package doesn't
+   * speak. From then on the server's own requests are answered through `opts.handlers`.
+   */
   static async connect(transport: McpClientTransport, opts: McpConnectOptions): Promise<McpClient> {
     const asked = opts.protocolVersion ?? MCP_PROTOCOL_VERSIONS[0];
-    const server = await call(transport, 0, 'initialize', { protocolVersion: asked, capabilities: {}, clientInfo: opts.clientInfo }, opts.signal);
+    const handlers = opts.handlers ?? {};
+    const server = await call(transport, 0, 'initialize', { protocolVersion: asked, capabilities: clientCapabilities(handlers), clientInfo: opts.clientInfo }, opts.signal);
     const version = SpokenVersion.safeParse(server.protocolVersion);
     if (!version.success) {
       await transport.close();
       throw new Error(`the server speaks MCP ${server.protocolVersion}, which this client doesn't`);
     }
     transport.opened(version.data);
+    // answer before `initialized`: a server may ask for the roots as soon as it hears it
+    const stopAnswering = answerServer(transport, handlers);
     await transport.notify({ jsonrpc: '2.0', method: 'notifications/initialized' });
     transport.listen();
-    return new McpClient(transport, server);
+    return new McpClient(transport, server, stopAnswering);
+  }
+
+  /** Tell the server the roots changed (`notifications/roots/list_changed`); it asks for them again. */
+  async rootsChanged(): Promise<void> {
+    await this.#transport.notify({ jsonrpc: '2.0', method: 'notifications/roots/list_changed' });
   }
 
   /** Call any request method this package speaks, with its params and result checked by type. */
@@ -498,6 +620,7 @@ export class McpClient {
 
   /** End the session. */
   close(): Promise<void> {
+    this.#stopAnswering();
     return this.#transport.close();
   }
 

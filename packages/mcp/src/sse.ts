@@ -1,31 +1,33 @@
 /**
- * Reading a server-sent event stream: each event's `data` lines, joined and parsed as JSON. Comments, other fields
- * and data that isn't JSON are skipped.
+ * Reading a server-sent event stream: each event's name and `data` lines ({@link readEventStream}), or each event's
+ * data parsed as JSON ({@link readEvents}). Comments and other fields are skipped.
  *
  * @module
  */
 
+/** One server-sent event: its name (`message` when the stream names none) and its data lines, joined. */
+export interface SseEvent {
+  readonly event: string;
+  readonly data: string;
+}
+
 /**
- * Read events until the stream ends or `onData` returns `true` (the stream is then cancelled). `onData` gets each
- * event's data parsed as JSON.
+ * Read events until the stream ends or `onEvent` returns `true` (the stream is then cancelled). An event with no data
+ * is skipped.
  */
-export async function readEvents(body: ReadableStream<Uint8Array>, onData: (data: unknown) => boolean): Promise<void> {
+export async function readEventStream(body: ReadableStream<Uint8Array>, onEvent: (event: SseEvent) => boolean): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let data: string[] = [];
-  /** End of one event: hand over its data. `true` stops reading. */
+  let name = 'message';
+  /** End of one event: hand it over. `true` stops reading. */
   const dispatch = (): boolean => {
     const text = data.join('\n');
+    const event = name;
     data = [];
-    if (text === '') { return false; }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return false;
-    }
-    return onData(parsed);
+    name = 'message';
+    return text === '' ? false : onEvent({ event, data: text });
   };
   try {
     for (;;) {
@@ -40,6 +42,8 @@ export async function readEvents(body: ReadableStream<Uint8Array>, onData: (data
           if (dispatch()) { await reader.cancel(); return; }
         } else if (line.startsWith('data:')) {
           data.push(line.slice(line.startsWith('data: ') ? 6 : 5));
+        } else if (line.startsWith('event:')) {
+          name = line.slice(6).trim();
         }
         newline = buffer.search(/\r?\n/);
       }
@@ -47,4 +51,20 @@ export async function readEvents(body: ReadableStream<Uint8Array>, onData: (data
   } finally {
     reader.releaseLock();
   }
+}
+
+/**
+ * Read events until the stream ends or `onData` returns `true` (the stream is then cancelled). `onData` gets each
+ * event's data parsed as JSON, whatever the event's name; data that isn't JSON is skipped.
+ */
+export async function readEvents(body: ReadableStream<Uint8Array>, onData: (data: unknown) => boolean): Promise<void> {
+  await readEventStream(body, (event) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(event.data);
+    } catch {
+      return false;
+    }
+    return onData(parsed);
+  });
 }

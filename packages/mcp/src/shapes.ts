@@ -212,3 +212,24 @@ export const McpClientNotifications = {
   /** The client gave up on a request: the server stops it. */
   'notifications/cancelled': z.object({ requestId: JsonRpcId, reason: z.string().optional() }),
 } as const;
+
+/* ---- requests a server sends the client ----------------------------------- */
+
+/** A folder or file the client lets the server work in (`roots/list`). */
+export const McpRoot = z.object({ uri: z.string(), name: z.string().optional() });
+export type McpRoot = z.infer<typeof McpRoot>;
+
+/** What `elicitation/create` asks: a message for the person and the flat JSON Schema of the form they fill. */
+export const McpElicitRequest = z.object({ message: z.string(), requestedSchema: JsonObject });
+export type McpElicitRequest = z.infer<typeof McpElicitRequest>;
+
+/** One answered field of an elicitation form. */
+export const McpElicitValue = z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]);
+export type McpElicitValue = z.infer<typeof McpElicitValue>;
+
+/** The person's answer: `accept` with the form's `content`, or `decline` (said no) or `cancel` (dismissed it). */
+export const McpElicitResult = z.object({
+  action: z.enum(['accept', 'decline', 'cancel']),
+  content: z.record(z.string(), McpElicitValue).optional(),
+});
+export type McpElicitResult = z.infer<typeof McpElicitResult>;

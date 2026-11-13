@@ -18,7 +18,9 @@
  * - Transports: {@link serveStdio} (newline-delimited JSON over an injected reader/writer), {@link mcpHttp}
  *   (Streamable HTTP as a web-standard `fetch` handler, optionally behind an authorizer such as {@link BearerAuth}),
  *   and {@link McpRouter} (many Streamable HTTP endpoints by path).
- * - {@link McpClient}: a typed client over HTTP, stdio, or in process ({@link McpMemoryClientTransport}).
+ * - {@link McpClient}: a typed client over Streamable HTTP, HTTP + SSE ({@link McpSseClientTransport}), stdio, or in process
+ *   ({@link McpMemoryClientTransport}), answering the server's own requests ({@link McpClientHandlers}); the OAuth client
+ *   functions ({@link discoverProtectedResource}, {@link exchangeCode}, …); `@ayepi/mcp/node` starts local servers.
  *
  * The protocol core does no I/O: `handle(message)` takes an already parsed object and returns a plain response
  * object (or `null` for notifications), so it is unit-testable without any transport.
@@ -43,7 +45,7 @@ import type { McpTool } from './shapes';
 export {
   JsonRpcId, McpTool, McpToolAnnotations, McpToolResult, McpClientNotifications, McpContent, McpResource, McpResourceTemplate, McpResourcePage, McpResourceContents,
   McpTextContents, McpBlobContents, McpPrompt, McpPromptArgument, McpPromptMessage, McpPromptResult, McpImplementation,
-  McpServerCapabilities, McpInitializeResult, McpResults, McpParams, McpNotifications, MCP_RESULTS, MCP_PARAMS,
+  McpServerCapabilities, McpInitializeResult, McpRoot, McpElicitRequest, McpElicitValue, McpElicitResult, McpResults, McpParams, McpNotifications, MCP_RESULTS, MCP_PARAMS,
   type McpMethod, type McpResultOf, type McpParamsOf, type McpNotificationMethod,
 } from './shapes';
 export {
@@ -69,9 +71,16 @@ export {
   type McpHttpOptions, type McpHttpHandler, type McpHttpSession, type McpSessionEndReason,
 } from './http';
 export { serveStdio, type LineReader, type LineWriter, type ServeStdioOptions } from './stdio';
+export { readEventStream, readEvents, type SseEvent } from './sse';
+export { McpSseClientTransport, type McpSseClientOptions } from './sse-client';
 export {
-  McpClient, McpError, McpToolError, McpHttpClientTransport, McpStdioClientTransport,
-  type McpClientTransport, type JsonRpcOutgoingRequest, type McpHttpClientOptions, type McpStdioClientOptions,
+  ProtectedResourceMetadata, AuthorizationServerMetadata, OAuthClient, OAuthTokens, OAuthError, parseBearerChallenge, resourceOf, discoverProtectedResource,
+  discoverAuthorizationServer, registerClient, makePkce, authorizationUrl, exchangeCode, refreshTokens, tokensExpireAt,
+  type OAuthFetchOptions, type BearerChallenge, type ClientRegistration, type Pkce, type AuthorizationRequest, type TokenClient,
+} from './oauth';
+export {
+  McpClient, McpError, McpToolError, McpHttpError, McpHttpClientTransport, McpStdioClientTransport,
+  type McpClientTransport, type McpClientHandlers, type JsonRpcOutgoingRequest, type McpHttpClientOptions, type McpStdioClientOptions,
   type McpNotice, type McpConnectOptions, type McpCallOptions,
 } from './client';
 

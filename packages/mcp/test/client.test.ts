@@ -305,6 +305,7 @@ describe('McpClient over stdio', () => {
     const transport: McpClientTransport = {
       request: async (message) => (message.method === 'initialize' ? initAnswer(message.id) : { jsonrpc: '2.0', id: message.id, error: { code: -1, message: 'no', data: { why: 'x' } } }),
       notify: async (message) => { sent.push(message); },
+      respond: async () => undefined,
       onMessage: () => () => undefined,
       opened: () => undefined,
       listen: () => undefined,

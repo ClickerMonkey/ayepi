@@ -666,10 +666,22 @@ export interface McpConnectOptions {
   readonly clientInfo: { name: string; version: string; title?: string };
   readonly protocolVersion?: McpProtocolVersion; // default the newest
   readonly signal?: AbortSignal;
+  readonly handlers?: McpClientHandlers;          // how it answers the server's own requests
 }
+
+export interface McpClientHandlers {
+  // elicitation/create: ask the person to fill a form; advertises the `elicitation` capability
+  readonly elicit?: (request: McpElicitRequest, signal: AbortSignal) => Promise<McpElicitResult>;
+  // roots/list: the folders the server may work in; advertises `roots: { listChanged: true }`
+  readonly roots?: (signal: AbortSignal) => Promise<readonly McpRoot[]>;
+}
+// McpElicitRequest: { message: string; requestedSchema: object }  (a flat JSON Schema form)
+// McpElicitResult:  { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> }
+// McpRoot:          { uri: string; name?: string }
 
 export class McpClient {
   static connect(transport: McpClientTransport, opts: McpConnectOptions): Promise<McpClient>;
+  rootsChanged(): Promise<void>; // sends notifications/roots/list_changed
   readonly server: McpInitializeResult; // protocolVersion, capabilities, serverInfo, instructions?
   request<M extends McpMethod>(method: M, params: McpParamsOf<M>, opts?: { signal?: AbortSignal }): Promise<McpResultOf<M>>;
   ping(opts?): Promise<void>;
@@ -705,12 +717,21 @@ listening for server notifications. Every answer is checked against
 follow `nextCursor` to the last page, stopping at a cursor seen before. A call whose `signal`
 aborts sends `notifications/cancelled` with its request id.
 
+**The server's own requests.** From the handshake on (before `notifications/initialized` is
+sent, so a server that asks for the roots at once is answered) the client answers what the server
+asks through `handlers`: `ping` always; `elicitation/create` with `elicit` (params that don't fit
+`McpElicitRequest` get `-32602`); `roots/list` with `roots`. Anything else, `sampling/createMessage`
+included, gets `-32601`; a handler that throws answers `-32603` with its message. A
+`notifications/cancelled` from the server aborts that request's `signal`, and so does `close` for
+every request in flight; an aborted request gets no answer.
+
 ### Transports
 
 ```ts
 export interface McpClientTransport {
   request(message: { jsonrpc: '2.0'; id: number; method: string; params?: unknown }, signal: AbortSignal): Promise<unknown>;
   notify(message: JsonRpcNotification): Promise<void>;
+  respond(message: JsonRpcResponse): Promise<void>;             // answer a request the server sent
   onMessage(listener: (message: unknown) => void): () => void; // messages the server sends on its own
   opened(version: McpProtocolVersion): void;                    // the agreed version, for later messages
   listen(): void;                                               // the handshake is done: start hearing the server
@@ -721,6 +742,10 @@ new McpHttpClientTransport(url, {
   fetch?: typeof fetch,                                          // default the global fetch
   headers?: Record<string, string> | (() => Record<string, string>), // e.g. a fresh auth token per request
   events?: boolean,                                              // open the GET event stream (default true)
+});
+new McpSseClientTransport(url, {                                  // HTTP + SSE (MCP 2024-11-05)
+  fetch?: typeof fetch,
+  headers?: Record<string, string> | (() => Record<string, string>),
 });
 new McpStdioClientTransport({ input: LineReader, output: LineWriter }); // e.g. a child process's stdout/stdin
 new McpMemoryClientTransport(server: McpServer, {
@@ -736,6 +761,14 @@ new McpMemoryClientTransport(server: McpServer, {
   `MCP-Protocol-Version` once agreed. After the handshake a `GET` event stream carries server
   notifications (a server that answers it with an error has none). `close` ends that stream
   and `DELETE`s the session. A reply that isn't JSON throws `HTTP <status> from <url>: <text>`.
+  A refused caller (`401`, `403`) throws **`McpHttpError`** (`status`, `wwwAuthenticate`: the
+  server's challenge, which names its OAuth metadata; see below). Answers to the server's requests
+  are `POST`ed like any message.
+- **`McpSseClientTransport`** speaks the older HTTP + SSE transport: the first message opens a
+  `GET` event stream whose `endpoint` event names where to `POST` messages (it must be on the
+  stream's origin, else the open fails); answers and server messages arrive as `message` events
+  and are matched to requests by id. When the stream ends, waiting and later requests fail. A
+  refused caller throws `McpHttpError` as above. Connect with `protocolVersion: '2024-11-05'`.
 - **`McpMemoryClientTransport`** hands each message to the server's `handle` in the same process:
   the way to test a server end to end with the typed client and no I/O. It hears the server's
   notifications for every session and for its own once connected. A request whose signal aborts
@@ -752,6 +785,70 @@ await client.subscribe('file:///notes/today.md');
 const [contents] = await client.readResource('file:///notes/today.md');
 const prompt = await client.getPrompt('summarize', { topic: 'cats' });
 await client.close();
+```
+
+### Local servers: `spawnStdioClient` (`@ayepi/mcp/node`)
+
+```ts
+import { spawnStdioClient } from '@ayepi/mcp/node';
+
+const { transport, child, exited } = spawnStdioClient('npx', ['-y', '@modelcontextprotocol/server-everything'], {
+  env?: Record<string, string>,   // added to this process's environment
+  cwd?: string,
+  stderr?: (line: string) => void, // the server's log; default dropped
+  killAfter?: number,              // ms close waits after ending its input before a kill (default 2000)
+});
+const client = await McpClient.connect(transport, { clientInfo: { name: 'me', version: '1' } });
+```
+
+Starts the command as a child process and returns a stdio transport over its stdin and stdout.
+On Windows a bare command is found on `PATH` with its `PATHEXT` extension, and a `.cmd` or `.bat`
+(such as `npx`) runs through `cmd.exe` with each argument quoted (`spawnCommand(command, args,
+env, platform?)` gives that plan). A command that can't start fails the first request. The
+transport's `close` ends the child's input and kills it if it hasn't exited after `killAfter`;
+`exited` resolves with its exit code (`null` when killed or never started). This subpath uses
+`node:child_process`; the main entry stays web-standard.
+
+### Authorization: OAuth for MCP servers
+
+Plain functions over `fetch` (each takes `{ fetch? }` last) for the client side of MCP
+authorization; nothing is stored, the caller keeps the client and the tokens.
+
+```ts
+parseBearerChallenge(wwwAuthenticate): { resourceMetadata?, scope?, error? } | undefined;
+resourceOf(serverUrl): string; // the RFC 8707 resource indicator: no fragment, query or trailing slash
+discoverProtectedResource(serverUrl, challenge?, opts?): Promise<ProtectedResourceMetadata>;   // { resource, authorization_servers, scopes_supported? }
+discoverAuthorizationServer(issuer, opts?): Promise<AuthorizationServerMetadata>;              // RFC 8414, then OpenID discovery
+registerClient(metadata, { redirectUris, clientName, scope? }, opts?): Promise<OAuthClient>;   // RFC 7591 public client
+makePkce(): Promise<{ verifier; challenge }>;                                                  // S256, on WebCrypto
+authorizationUrl(metadata, { clientId, redirectUri, challenge, state, resource, scope? }): string;
+exchangeCode(metadata, { clientId, clientSecret? }, { code, verifier, redirectUri, resource }, opts?): Promise<OAuthTokens>;
+refreshTokens(metadata, { clientId, clientSecret? }, { refreshToken, resource, scope? }, opts?): Promise<OAuthTokens>;
+tokensExpireAt(tokens, receivedAt): number | undefined;
+```
+
+- Discovery: the challenge's `resource_metadata` URL when it has one, else
+  `/.well-known/oauth-protected-resource` with the server's path, then at the root. The
+  authorization server: `/.well-known/oauth-authorization-server` then
+  `/.well-known/openid-configuration`, each with the issuer's path, then at the root. Nothing
+  found throws `OAuthError` (`code: 'no_metadata'`).
+- `registerClient` registers a public client (`token_endpoint_auth_method: 'none'`, PKCE protects
+  its codes); a server with no `registration_endpoint` throws `OAuthError('no_registration')`.
+- Token requests send the `resource` indicator. A confidential client's secret goes as HTTP Basic
+  unless the server's `token_endpoint_auth_methods_supported` leaves `client_secret_basic` out (then
+  in the body). An OAuth error answer throws `OAuthError` with its `error` code; an answer that isn't
+  JSON throws `http_<status>`; one that doesn't fit throws `invalid_answer`.
+
+```ts
+const refused = await McpClient.connect(new McpHttpClientTransport(url), info).catch((e) => e);
+if (refused instanceof McpHttpError && refused.status === 401) {
+  const resource = await discoverProtectedResource(url, parseBearerChallenge(refused.wwwAuthenticate ?? ''));
+  const server = await discoverAuthorizationServer(resource.authorization_servers[0]);
+  const client = await registerClient(server, { redirectUris: [callback], clientName: 'me' });
+  const pkce = await makePkce();
+  // send the person to authorizationUrl(server, { clientId: client.client_id, redirectUri: callback, challenge: pkce.challenge, state, resource: resourceOf(url) })
+  // then, on the callback: exchangeCode(server, { clientId: client.client_id }, { code, verifier: pkce.verifier, redirectUri: callback, resource: resourceOf(url) })
+}
 ```
 
 ---

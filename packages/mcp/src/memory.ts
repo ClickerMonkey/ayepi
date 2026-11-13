@@ -7,7 +7,7 @@
 
 import type { JsonRpcOutgoingRequest, McpClientTransport } from './client';
 import { Listeners } from './listeners';
-import type { JsonRpcNotification, McpAuthInfo, McpServer } from './protocol';
+import type { JsonRpcNotification, JsonRpcResponse, McpAuthInfo, McpServer } from './protocol';
 
 /** Options for {@link McpMemoryClientTransport}. */
 export interface McpMemoryClientOptions {
@@ -61,6 +61,10 @@ export class McpMemoryClientTransport implements McpClientTransport {
   }
 
   async notify(message: JsonRpcNotification): Promise<void> {
+    await this.#server.handle(message, this.#options());
+  }
+
+  async respond(message: JsonRpcResponse): Promise<void> {
     await this.#server.handle(message, this.#options());
   }
 

@@ -1,8 +1,8 @@
 import { defineConfig } from 'tsdown';
 
-/** Single entry; core (+ its client subpath) and zod stay external (peer deps). */
+/** The web-standard entry and the Node one (child processes); core (+ its client subpath) and zod stay external (peer deps). */
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/node.ts'],
   format: ['esm', 'cjs'],
   dts: true,
   clean: true,
