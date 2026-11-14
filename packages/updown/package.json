@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/updown",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Graceful startup/shutdown orchestration — named components with dependencies, two-phase shutdown, liveness/readiness",
   "license": "MIT",
   "publishConfig": {

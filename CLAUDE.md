@@ -92,4 +92,8 @@ Verify every documented API against the source before writing — never invent o
   `vitest.config.ts` thresholds before assuming). Lint: `eslint` + `node scripts/check-casts.mjs`
   (no unjustified `as unknown as` double casts).
 - `@ayepi/core` stays web-standard — no `node:*` imports in its runtime code.
-- Versions are shared across all packages via `node scripts/version.mjs <patch|minor|major>`.
+- Versions are shared across all packages via `node scripts/version.mjs <patch|minor|major>`: every
+  release bumps every package, changed or not, so matching versions always go together.
+- Release: bump, run the checks, commit and push `main`, then push a `v<version>` tag. The Release
+  workflow (`.github/workflows/release.yml`) publishes every package with npm trusted publishing
+  (`scripts/publish-ci.mjs`; environment `npm`, no token). Don't publish by hand.

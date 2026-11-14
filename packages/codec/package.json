@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/codec",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Rich JSON codec — tagged, reversible serialization of Date, BigInt, Map, Set, undefined, Error, and custom types through JSON.stringify/parse",
   "license": "MIT",
   "publishConfig": {

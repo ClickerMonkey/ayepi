@@ -1,22 +1,39 @@
 name: Release
 
-# Publish every @ayepi/* package to npm. Trigger by pushing a version tag (e.g. `v0.1.0`)
-# or manually via the Actions tab. pnpm publishes in dependency order, rewrites the
-# `workspace:^` ranges to real versions, and skips any version already on the registry.
+# Publish every @ayepi/* package to npm with trusted publishing (no stored token).
 #
-# Requires repo secret NPM_TOKEN (an npm automation token with publish rights on the @ayepi scope).
+# All packages share one version. To release:
+#   pnpm version:set <patch|minor|major|x.y.z>
+#   run the checks locally (CI runs them on main), commit, push main, then:
+#   git tag v<version> && git push origin v<version>
+#
+# scripts/publish-ci.mjs refuses mixed versions or a tag that doesn't match, packs each package with
+# pnpm (rewriting `workspace:^` to real versions) and publishes it with npm in dependency order,
+# skipping any version already on the registry. Each package needs a trusted publisher on npmjs.com:
+# repo ClickerMonkey/ayepi, workflow release.yml, environment npm.
 on:
   push:
     tags: ['v*.*.*']
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and pack, but don't publish
+        type: boolean
+        default: true
 
 permissions:
   contents: read
-  id-token: write # npm provenance
+  id-token: write # trusted publishing and provenance
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   publish:
+    # GitHub-hosted on purpose: npm trusted publishing only accepts OIDC tokens from cloud runners
     runs-on: ubuntu-latest
+    environment: npm
     steps:
       - uses: actions/checkout@v4
 
@@ -26,9 +43,12 @@ jobs:
       - name: Install Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
+
+      - name: npm with trusted publishing (11.5.1+)
+        run: npm install -g npm@^11.5.1
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -40,7 +60,4 @@ jobs:
         run: pnpm -r publint
 
       - name: Publish to npm
-        run: pnpm -r publish --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: 'true'
+        run: node scripts/publish-ci.mjs ${{ inputs.dry_run && '--dry-run' || '' }}

@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/sqlite",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "SQLite backends for ayepi (better-sqlite3) — the @ayepi/work Queue, Store and PubSub, and an @ayepi/rate store, in one database file",
   "license": "MIT",
   "publishConfig": {
