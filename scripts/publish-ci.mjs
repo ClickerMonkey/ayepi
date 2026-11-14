@@ -72,7 +72,13 @@ for (const name of todo) {
   const args = ['publish', tarball, '--access', 'public'];
   if (ci) args.push('--provenance');
   if (dryRun) args.push('--dry-run');
-  const result = spawnSync('npm', args, { stdio: 'inherit', shell });
+  const result = spawnSync('npm', args, { stdio: ['inherit', 'inherit', 'pipe'], encoding: 'utf8', shell });
+  process.stderr.write(result.stderr);
+  // A version published moments ago sits staged for a few minutes, invisible to npm view: a re-run hits this
+  if (result.status !== 0 && /previously (staged|published) version/.test(result.stderr)) {
+    console.log(`${name}@${version} is already on npm (maybe still staged): skipped`);
+    continue;
+  }
   if (result.status !== 0) fail(`Publish failed: ${name}@${version}`);
 }
 
