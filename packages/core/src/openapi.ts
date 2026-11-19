@@ -13,7 +13,7 @@
 import type { z } from 'zod';
 import type { Json } from './types';
 import type { SpecDoc, NormalizedEp } from './endpoint';
-import { jsonSchema, propSchemas } from './jsonschema';
+import { hoistSchemaDefs, jsonSchema, propSchemas } from './jsonschema';
 
 /**
  * Build the OpenAPI 3.1 document for a set of normalized endpoints.
@@ -109,5 +109,5 @@ export function buildOpenapi(eps: readonly NormalizedEp[], specDoc: SpecDoc | un
     ...(Object.keys(securitySchemes).length > 0 ? { components: { securitySchemes } } : {}),
   };
   if (specDoc?.openapi) {doc = specDoc.openapi(doc);}
-  return doc;
+  return hoistSchemaDefs(doc);
 }

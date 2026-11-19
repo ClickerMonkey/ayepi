@@ -5,7 +5,7 @@ Expose any [`@ayepi/core`](https://www.npmjs.com/package/@ayepi/core) spec as
 from your zod endpoint definitions and executed against your running app.
 
 ```sh
-pnpm add @ayepi/mcp @ayepi/core zod
+pnpm add @ayepi/mcp @ayepi/core @ayepi/auth zod
 ```
 
 `@ayepi/core` and `zod` (`^4`) are **peer dependencies**. There is no external MCP SDK —

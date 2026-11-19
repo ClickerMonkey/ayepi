@@ -12,7 +12,7 @@
 
 import type { Json } from './types';
 import type { SpecDoc, EventConfig, NormalizedEp } from './endpoint';
-import { jsonSchema, propSchemas } from './jsonschema';
+import { hoistSchemaDefs, jsonSchema, propSchemas } from './jsonschema';
 
 /** The minimal normalized-event shape AsyncAPI generation reads. @internal */
 export interface AsyncapiEvent {
@@ -67,7 +67,7 @@ export function buildAsyncapi(
     };
     if (ev.cfg.doc?.asyncapi) {channel = ev.cfg.doc.asyncapi(channel);}
     channels[ev.ws] = channel;
-    operations[`receive.${ev.name}`] = { action: 'receive', channel: { $ref: `#/channels/${ev.ws}` } };
+    operations[`receive.${ev.name}`] = { action: 'receive', channel: { $ref: `#/channels/${ev.ws.replace(/~/g, '~0').replace(/\//g, '~1')}` } };
   }
   for (const e of eps) {
     if (!e.wsEligible) {continue;}
@@ -133,5 +133,5 @@ export function buildAsyncapi(
   }
   let doc: Record<string, Json> = { asyncapi: '3.0.0', info: { title: info?.title ?? 'api', version: info?.version ?? '0.0.0' }, channels, operations };
   if (specDoc?.asyncapi) {doc = specDoc.asyncapi(doc);}
-  return doc;
+  return hoistSchemaDefs(doc);
 }

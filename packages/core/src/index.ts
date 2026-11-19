@@ -154,6 +154,10 @@ export type {
 export { createConnectivity } from './connectivity';
 export type { Connectivity, ConnStatus, ConnectivityOptions, WhenOnlineOptions } from './connectivity';
 
+/* --- JSON Schema --- */
+export { jsonSchema, withJsonSchema, schemaMembers, collectSchemaDefs } from './jsonschema';
+export type { JsonSchemaObject, JsonSchemaSource } from './jsonschema';
+
 /* --- websocket transport --- */
 export type {
   WsTransport,

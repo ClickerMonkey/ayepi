@@ -120,6 +120,24 @@ describe('client unauthorized hook', () => {
     expect(state.hooks).toBe(1);
     socket.close();
   });
+
+  it('ws: a false hook lets the 401 through', async () => {
+    const { sdk, state, socket } = setup({ transport: 'ws', refresh: () => false });
+    expect(await status(sdk.call('whoami', { n: 1 }))).toBe(401);
+    expect(state.hooks).toBe(1);
+    socket.close();
+  });
+
+  it('ws: a call aborted while the hook runs is not sent again', async () => {
+    FakeWS.urls = [];
+    const ac = new AbortController();
+    let sent = 0;
+    const { sdk, state, socket } = setup({ transport: 'ws', refresh: (t) => (ac.abort(), sent++, (t.token = 'fresh'), true) });
+    await expect(sdk.call('whoami', { n: 1 }, { signal: ac.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    await new Promise((r) => setTimeout(r, 10));
+    expect([state.hooks, sent]).toEqual([1, 1]);
+    socket.close();
+  });
 });
 
 describe('wsTransport.reconnect', () => {

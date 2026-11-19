@@ -15,7 +15,8 @@ Guidance for working in this repo — a pnpm monorepo of `@ayepi/*` packages.
 
 **Middleware (for `@ayepi/core`)**
 
-- `@ayepi/auth` — Bearer (JWT) / Basic auth with signing/verification and user context.
+- `@ayepi/auth` — Bearer (JWT) / Basic auth with signing/verification and user context; a
+  web-standard OAuth 2 / OpenID Connect client at `@ayepi/auth/oauth` (also MCP's sign-in).
 - `@ayepi/rate` — rate limiting (pluggable stores, multiple algorithms, custom 429s) plus the
   `rateLimitedDoer` (global + per-group start-rate gating); distributed store at `@ayepi/rate/redis`.
 - `@ayepi/cache` — response caching (ttl / stale-while-revalidate, per-request vary, byte/entry bounds).

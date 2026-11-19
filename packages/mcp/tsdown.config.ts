@@ -1,6 +1,6 @@
 import { defineConfig } from 'tsdown';
 
-/** The web-standard entry and the Node one (child processes); core (+ its client subpath) and zod stay external (peer deps). */
+/** The web-standard entry and the Node one (child processes); core (+ its client subpath), auth's OAuth client and zod stay external (peer deps). */
 export default defineConfig({
   entry: ['src/index.ts', 'src/node.ts'],
   format: ['esm', 'cjs'],
@@ -9,5 +9,5 @@ export default defineConfig({
   outDir: 'dist',
   treeshake: true,
   hash: false,
-  external: ['@ayepi/core', '@ayepi/core/client', 'zod'],
+  external: ['@ayepi/core', '@ayepi/core/client', '@ayepi/auth/oauth', 'zod'],
 });

@@ -19,7 +19,7 @@ other **tools, resources and prompts** you give it as sources. On the client sid
 `McpClient` connects to any MCP server over Streamable HTTP or stdio.
 
 ```sh
-pnpm add @ayepi/mcp @ayepi/core zod   # @ayepi/core and zod are peer deps
+pnpm add @ayepi/mcp @ayepi/core @ayepi/auth zod   # @ayepi/core, @ayepi/auth and zod are peer deps
 ```
 
 ```ts
@@ -114,12 +114,12 @@ schema** — exactly the shape the client expects as `data`:
   input schema is that body's schema directly (e.g. `{ type: 'string' }`).
 - An endpoint with **no input** gets `{ type: 'object', properties: {} }`.
 
-JSON Schema is produced with zod v4's **`z.toJSONSchema(schema, { io: 'input' })`**.
-(Core's own `jsonSchema` helper is `@internal` and not exported, so this package calls
-`z.toJSONSchema` directly — the same primitive core uses under the hood.) A schema that
-zod cannot represent (e.g. `z.custom()`, `z.function()`) **degrades gracefully** to a
-placeholder `{ type: 'string', description: 'unrepresentable schema' }` rather than
-throwing; an object field that is unrepresentable simply contributes no property.
+JSON Schema is produced with core's `jsonSchema` (zod v4's `z.toJSONSchema(schema, { io: 'input' })`,
+the same conversion as the OpenAPI/AsyncAPI documents). A schema zod cannot represent (e.g. `z.custom()`,
+`z.function()`) becomes an open schema (`{}`, any value), unless it supplies its own JSON Schema with
+core's `withJsonSchema` ([core docs](./ayepi-core.md#json-schema)). Each part's `$defs` (zod's recursive
+helpers, such as `z.json()`) are gathered into the tool schema's root `$defs` with identical definitions
+merged (`collectSchemaDefs`), so every `$ref` resolves.
 
 ### Files & streaming (gotchas)
 
@@ -223,7 +223,7 @@ export interface McpPromptSource {
 
 A tool source whose tools are defined, replaced and removed while it serves. A tool comes from a
 **JSON Schema** (checked as zod reads it with `z.fromJSONSchema`) or a **zod schema** (its JSON
-Schema derived with `z.toJSONSchema(args, { io: 'input', unrepresentable: 'any' })`, and `run`
+Schema derived with core's `jsonSchema(args)`, the same conversion as `mcpTools`), and `run`
 gets the parsed, typed output, defaults applied).
 
 ```ts
@@ -812,7 +812,10 @@ transport's `close` ends the child's input and kills it if it hasn't exited afte
 ### Authorization: OAuth for MCP servers
 
 Plain functions over `fetch` (each takes `{ fetch? }` last) for the client side of MCP
-authorization; nothing is stored, the caller keeps the client and the tokens.
+authorization; nothing is stored, the caller keeps the client and the tokens. The MCP-specific
+ones (`parseBearerChallenge`, `resourceOf`, `discoverProtectedResource`) live here; the OAuth 2
+ones are the generic client of `@ayepi/auth/oauth` (a peer dependency), re-exported — see
+[`ayepi-auth.md`](./ayepi-auth.md) for that client, including OpenID Connect.
 
 ```ts
 parseBearerChallenge(wwwAuthenticate): { resourceMetadata?, scope?, error? } | undefined;
@@ -821,7 +824,7 @@ discoverProtectedResource(serverUrl, challenge?, opts?): Promise<ProtectedResour
 discoverAuthorizationServer(issuer, opts?): Promise<AuthorizationServerMetadata>;              // RFC 8414, then OpenID discovery
 registerClient(metadata, { redirectUris, clientName, scope? }, opts?): Promise<OAuthClient>;   // RFC 7591 public client
 makePkce(): Promise<{ verifier; challenge }>;                                                  // S256, on WebCrypto
-authorizationUrl(metadata, { clientId, redirectUri, challenge, state, resource, scope? }): string;
+authorizationUrl(metadata, { clientId, redirectUri, challenge, state, resource, scope? }): string; // pass resource: resourceOf(url)
 exchangeCode(metadata, { clientId, clientSecret? }, { code, verifier, redirectUri, resource }, opts?): Promise<OAuthTokens>;
 refreshTokens(metadata, { clientId, clientSecret? }, { refreshToken, resource, scope? }, opts?): Promise<OAuthTokens>;
 tokensExpireAt(tokens, receivedAt): number | undefined;
@@ -830,12 +833,13 @@ tokensExpireAt(tokens, receivedAt): number | undefined;
 - Discovery: the challenge's `resource_metadata` URL when it has one, else
   `/.well-known/oauth-protected-resource` with the server's path, then at the root. The
   authorization server: `/.well-known/oauth-authorization-server` then
-  `/.well-known/openid-configuration`, each with the issuer's path, then at the root. Nothing
-  found throws `OAuthError` (`code: 'no_metadata'`).
+  `/.well-known/openid-configuration`, each with the issuer's path, then at the root, then
+  `<issuer>/.well-known/openid-configuration`. Nothing found throws `OAuthError`
+  (`code: 'no_metadata'`).
 - `registerClient` registers a public client (`token_endpoint_auth_method: 'none'`, PKCE protects
   its codes); a server with no `registration_endpoint` throws `OAuthError('no_registration')`.
-- Token requests send the `resource` indicator. A confidential client's secret goes as HTTP Basic
-  unless the server's `token_endpoint_auth_methods_supported` leaves `client_secret_basic` out (then
+- Pass the server's `resource` indicator to the authorization URL and every token request
+  (MCP requires it). A confidential client's secret goes as HTTP Basic unless the server's `token_endpoint_auth_methods_supported` leaves `client_secret_basic` out (then
   in the body). An OAuth error answer throws `OAuthError` with its `error` code; an answer that isn't
   JSON throws `http_<status>`; one that doesn't fit throws `invalid_answer`.
 

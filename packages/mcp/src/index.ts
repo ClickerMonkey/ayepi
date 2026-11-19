@@ -37,8 +37,8 @@
  */
 
 import { z } from 'zod';
-import { client } from '@ayepi/core';
-import type { AnySpec, EndpointConfig, Server, ApiClient } from '@ayepi/core';
+import { client, collectSchemaDefs, jsonSchema, schemaMembers } from '@ayepi/core';
+import type { AnySpec, EndpointConfig, Server, ApiClient, Json, JsonSchemaObject } from '@ayepi/core';
 import { errorResult, mcpToolServer, textResult, type McpServer, type McpToolServerOptions, type McpToolSource } from './protocol';
 import type { McpTool } from './shapes';
 
@@ -100,29 +100,6 @@ export interface McpToolsOptions {
   readonly namePrefix?: string;
 }
 
-/** A JSON Schema object fragment (loosely typed — JSON Schema is open-ended). */
-type JsonSchemaObject = Record<string, unknown>;
-
-/** Convert a zod schema to its input-view JSON Schema, degrading to a placeholder if zod cannot represent it. */
-function toInputSchema(schema: z.ZodType): JsonSchemaObject {
-  try {
-    return z.toJSONSchema(schema, { io: 'input' }) as JsonSchemaObject;
-  } catch {
-    return { type: 'string', description: 'unrepresentable schema' };
-  }
-}
-
-/** Read the `properties`/`required` of a zod object schema's JSON Schema (or empties when absent / non-object). */
-function objectMembers(schema: z.ZodType | undefined): { properties: JsonSchemaObject; required: string[] } {
-  if (!schema) {
-    return { properties: {}, required: [] };
-  }
-  const js = toInputSchema(schema);
-  const properties = js.properties && typeof js.properties === 'object' ? (js.properties as JsonSchemaObject) : {};
-  const required = Array.isArray(js.required) ? (js.required as string[]) : [];
-  return { properties, required };
-}
-
 /**
  * Build the merged input JSON Schema for one endpoint.
  *
@@ -136,12 +113,12 @@ function objectMembers(schema: z.ZodType | undefined): { properties: JsonSchemaO
 function inputSchemaFor(cfg: EndpointConfig): JsonSchemaObject {
   // A non-object body *is* the data payload — surface it directly.
   if (cfg.body && !(cfg.body instanceof z.ZodObject)) {
-    return toInputSchema(cfg.body);
+    return jsonSchema(cfg.body);
   }
-  const properties: JsonSchemaObject = {};
+  const properties: Record<string, Json> = {};
   const required: string[] = [];
   for (const schema of [cfg.params, cfg.query, cfg.body]) {
-    const { properties: props, required: req } = objectMembers(schema);
+    const { properties: props, required: req } = schemaMembers(schema);
     Object.assign(properties, props);
     for (const key of req) {
       required.push(key);
@@ -155,7 +132,8 @@ function inputSchemaFor(cfg: EndpointConfig): JsonSchemaObject {
   if (required.length > 0) {
     schema.required = required;
   }
-  return schema;
+  // each part's `$defs` travel with its properties; gather them into the one tool schema
+  return collectSchemaDefs(schema);
 }
 
 /** Derive a tool's description from its endpoint doc, falling back to the endpoint name. */

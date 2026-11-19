@@ -1,8 +1,8 @@
 import { defineConfig } from 'tsdown';
 
-/** Frontend-safe def entry (`.`) + node binder/JWT entry (`./server`, the only `node:crypto` user). core + zod external. */
+/** Frontend-safe def entry (`.`) + node binder/JWT entry (`./server`, the only `node:crypto` user) + the web-standard OAuth/OIDC client (`./oauth`). core + zod external. */
 export default defineConfig({
-  entry: ['src/index.ts', 'src/server.ts'],
+  entry: ['src/index.ts', 'src/server.ts', 'src/oauth.ts'],
   format: ['esm', 'cjs'],
   dts: true,
   clean: true,

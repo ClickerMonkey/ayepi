@@ -74,7 +74,7 @@ Cross-cutting conventions, true across the whole library:
 ### Middleware & cross-cutting concerns
 | Doc | Open it when you need to… |
 | --- | --- |
-| [`./ayepi-auth.md`](./ayepi-auth.md) | add **Bearer (JWT)** or **Basic** auth; or the standalone `signJwt`/`verifyJwt` crypto. |
+| [`./ayepi-auth.md`](./ayepi-auth.md) | add **Bearer (JWT)** or **Basic** auth; or the standalone `signJwt`/`verifyJwt` crypto; or sign people in through an **OpenID Connect / OAuth 2** provider (`@ayepi/auth/oauth`: PKCE, JWKS, ID token verification). |
 | [`./ayepi-rate.md`](./ayepi-rate.md) · [`./ayepi-rate-stores-doer.md`](./ayepi-rate-stores-doer.md) | **rate-limit** requests (pluggable stores, multiple algorithms) or build a rate-limited `Doer`. |
 | [`./ayepi-cache.md`](./ayepi-cache.md) | **cache responses** (ttl + stale-while-revalidate, per-request `vary`, LRU by bytes/entries). |
 | [`./ayepi-log.md`](./ayepi-log.md) · [`-middleware`](./ayepi-log-middleware.md) · [`-transports`](./ayepi-log-transports.md) · [`-errors-console`](./ayepi-log-errors-console.md) | **structured logging** with `logWith` trace context, redaction/truncation (`sanitize`), `logMaybe`/`toLOG`, console/file transports, console interception. |

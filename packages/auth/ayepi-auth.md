@@ -20,6 +20,10 @@ operation it protects:
   expose `{ user }`.
 - **`signJwt` / `verifyJwt`** — standalone HS256 primitives (the bearer middleware is built
   on them) for use anywhere: queue workers, CLIs, other frameworks.
+- **`@ayepi/auth/oauth`** — a web-standard **OAuth 2 + OpenID Connect client** for signing in
+  through an outside provider: discovery, PKCE, code exchange and refresh, key sets (JWKS) with
+  rotation, ID token verification (RS256 / ES256 / EdDSA), userinfo, and `OidcClient`, which runs
+  the whole code flow. See [OAuth 2 and OpenID Connect](#oauth-2-and-openid-connect--ayepiauthoauth).
 
 ## Def / impl split & the two entry points
 
@@ -37,6 +41,7 @@ These map onto two entry points:
 | ----------------------- | ----------------------------------------------------------------------------- | -------------- |
 | `@ayepi/auth`           | `bearerAuth` / `basicAuth` **def factories** (no secrets, no `node:crypto`)    | **yes**        |
 | `@ayepi/auth/server`    | the same `bearerAuth` / `basicAuth` augmented with `.server(def, cfg)` binders, plus `signJwt` / `verifyJwt` / `JwtError` | **no** (pulls `node:crypto`) |
+| `@ayepi/auth/oauth`     | the OAuth 2 + OpenID Connect client (`OidcClient`, `verifyIdToken`, `JwksCache`, PKCE, …) | **yes** (WebCrypto + `fetch`) |
 
 The flow is always:
 
@@ -50,8 +55,9 @@ The flow is always:
 A spec that imports only `@ayepi/auth` is therefore **frontend-safe** — the `.server` binder
 and JWT crypto stay in `@ayepi/auth/server`, out of any browser bundle.
 
-The only runtime dependencies are `@ayepi/core` and `zod` (both peers). JWT crypto uses
-**`node:crypto` only** — no external JWT library, **HS256 only**.
+The only runtime dependencies are `@ayepi/core` and `zod` (both peers). The bearer middleware's
+JWT crypto uses **`node:crypto` only** — no external JWT library, **HS256 only**. The OAuth/OIDC
+client verifies provider tokens on **WebCrypto** (RS256, ES256, EdDSA), also with no JWT library.
 
 See `ayepi-core-middleware.md` for how middleware defs, `requires`, stacks,
 `.group()` / `.endpoint()`, and `implement(api).middleware(...)` work — `bearerAuth` /
@@ -289,6 +295,135 @@ emits under `components.securitySchemes` + per-operation `security`. Because the
 on the **def**, these docs are available frontend-side too (no impl / secret needed to render
 them). See `ayepi-core-middleware.md` (`MiddlewareDoc.security`) for the underlying mechanism.
 
+## OAuth 2 and OpenID Connect — `@ayepi/auth/oauth`
+
+The client side of signing in through an outside provider (any OpenID Connect provider, or a
+plain OAuth 2 authorization server). It is **web-standard** — WebCrypto + `fetch`, no `node:*` —
+so it runs on Node, Bun, Deno, workers and in browsers. Every network answer is checked against
+a zod schema. **Nothing is stored**: the caller keeps clients, pending sign-ins and tokens. Each
+function that fetches takes `{ fetch? }` (default the global `fetch`).
+
+### Sign-in with `OidcClient`
+
+```ts
+import { OidcClient, verifiedEmailOf } from '@ayepi/auth/oauth'
+
+const oidc = new OidcClient({
+  issuer: env.OIDC_ISSUER,             // the issuer, or its .well-known/openid-configuration URL
+  clientId: env.OIDC_CLIENT_ID,
+  clientSecret: env.OIDC_CLIENT_SECRET, // omit for a public client
+})
+
+// 1. start: fresh state, nonce and PKCE; keep `pending` until the callback (signed cookie, server row)
+const { url, pending } = await oidc.begin({ redirectUri: 'https://app.example/auth/callback', params: { prompt: 'select_account' } })
+// redirect the browser to `url`
+
+// 2. callback: checks state, exchanges the code, verifies the ID token (signature, iss, aud/azp, exp/nbf/iat, nonce)
+const { claims, tokens } = await oidc.finish(new URL(request.url).searchParams, pending)
+claims.sub                 // the stable account id at this issuer: key outside identities by (issuer, sub)
+verifiedEmailOf(claims)    // the email only when the provider says email_verified
+claims.groups              // custom claims pass through untyped
+```
+
+- **Discovery** happens on first use and is kept for `metadataMaxAgeMs` (default 1 hour); a
+  failed fetch is not kept, and concurrent callers share one fetch. The key set
+  (`jwks_uri`) is a `JwksCache` kept across rediscoveries while `jwks_uri` stays the same.
+- **`begin({ redirectUri, scope?, params?, maxAgeSec? })`** — `scope` defaults to `openid email profile`
+  (`openid` is added when missing); `params` adds other authorization parameters (`prompt`,
+  `login_hint`, …) but never replaces the flow's own. `maxAgeSec` sends `max_age` and is kept in
+  `pending`, so `finish` refuses an ID token whose `auth_time` is older (reason `auth_time`);
+  a `max_age` passed in `params` is sent but not checked.
+- **`finish(callback, pending)`** throws `OAuthError`: the provider's `error` (e.g.
+  `access_denied`, with its `error_description`), `state_mismatch`, `invalid_request` (no code),
+  a token endpoint error, `no_id_token`, or a `TokenError` from ID token verification.
+- **`verifyIdToken(token, { nonce?, maxAgeSec? })`** — verify any ID token from this provider
+  for this client. The algorithms tried are the client's `algorithms` (default RS256, ES256,
+  EdDSA) narrowed to the provider's `id_token_signing_alg_values_supported`.
+- **`userinfo(accessToken, sub?)`** — the userinfo endpoint; with `sub`, the answer must be about
+  that subject (`userinfo_sub_mismatch` otherwise).
+- **`refresh(refreshToken, scope?)`** — fresh tokens. A returned `id_token` is not verified by
+  `refresh`; pass it to `verifyIdToken` when you use it.
+- **`metadata()`** — the discovered provider metadata.
+
+`OidcClientOptions`: `issuer`, `clientId`, `clientSecret?`, `fetch?`, `now?` (epoch ms clock,
+default `Date.now`), `metadataMaxAgeMs?`, `jwks?: { maxAgeMs?, cooldownMs? }`, `algorithms?`,
+`clockToleranceSec?` (default 60).
+
+### Linking by email
+
+`verifiedEmailOf(claims)` returns `claims.email` only when `email_verified` is `true` (or the
+string `"true"`, as some providers send it), else `undefined`. Match an outside identity to an
+existing local account by email **only** through it: an unverified email is whatever the person
+typed at the provider.
+
+### ID tokens and key sets
+
+```ts
+import { JwksCache, discoverOidc, verifyIdToken, staticKeys } from '@ayepi/auth/oauth'
+
+const meta = await discoverOidc('https://accounts.example.com')
+const keys = new JwksCache(meta.jwks_uri, { maxAgeMs: 3_600_000, cooldownMs: 30_000 })
+const claims = await verifyIdToken(idToken, { issuer: meta.issuer, clientId, keys, nonce })
+```
+
+- **`discoverOidc(issuerOrUrl)`** fetches `<issuer>/.well-known/openid-configuration` (or the
+  discovery URL given) and requires its `issuer` to be the issuer it was found under (one
+  trailing slash aside): `OAuthError('no_metadata' | 'issuer_mismatch')`.
+- **`JwksCache(uri, { maxAgeMs?, cooldownMs?, fetch?, now? })`** fetches the key set when first
+  needed and keeps it for `maxAgeMs` (default 1 hour), with its imported `CryptoKey`s. A token
+  whose `kid` isn't in the set fetches it again at once — the provider rotated its keys — unless
+  the last fetch was under `cooldownMs` ago (default 30 s), so forged `kid`s can't hammer the
+  provider. One fetch is in flight at a time; a failed fetch isn't kept. `refresh()` fetches now.
+- **`verifyIdToken(token, opts)`** (OpenID Connect Core §3.1.3.7) checks, in order: the JWS
+  shape; `alg` is an accepted one (`none` and HMAC never are); the signature on a key that fits
+  (`kid`, key type, curve, `use: sig`, the key's `alg`; with no `kid`, every fitting key is
+  tried); the claims' shape; `iss` equals `issuer` exactly; `aud` includes `clientId`; `azp`
+  equals `clientId` when present or when `aud` names others; `exp`, `nbf`, `iat` with
+  `clockToleranceSec` leeway (default 60); `nonce` equals the given one; and with `maxAgeSec`,
+  `auth_time` is present and recent enough. Options: `issuer`, `clientId`, `keys`, `nonce?`,
+  `algorithms?`, `clockToleranceSec?`, `maxAgeSec?`, `now?`.
+- **`TokenError`** (an `OAuthError` with `code: 'invalid_token'`) carries a `reason`:
+  `malformed`, `unsupported_alg`, `unknown_key`, `bad_signature`, `issuer`, `audience`, `azp`,
+  `expired`, `not_yet_valid`, `iat`, `nonce`, `auth_time`.
+- **Key sources.** `verifyIdToken`/`verifyJws` take any `JwsKeySource` (`{ keys(header) }`):
+  a `JwksCache`, or `staticKeys(jwkSet)` for a set you already hold (pinned keys, tests).
+- Lower-level: `decodeJws(token, algorithms?)`, `verifyJws(token, source, algorithms?)`,
+  `jwsSignedBy(jws, keys)`, `keysFor(set, header)`, `importJwk(jwk, alg)`, `isJwsAlgorithm`,
+  `JWS_ALGORITHMS`, and the zod schemas `Jwk`, `JwkSet`, `OidcMetadata`, `IdTokenClaims`,
+  `UserInfo`. EdDSA is Ed25519.
+- **`fetchUserInfo(metadata, accessToken, sub?)`** — the userinfo call `OidcClient.userinfo` uses
+  (`no_userinfo` when the provider has no endpoint).
+
+### OAuth 2 building blocks
+
+The plain functions the OIDC client is built from, for any OAuth 2 server (and the ones
+`@ayepi/mcp` signs in to MCP servers with):
+
+```ts
+discoverAuthorizationServer(issuer): Promise<AuthorizationServerMetadata>; // RFC 8414, then OpenID discovery
+registerClient(metadata, { redirectUris, clientName, scope? }): Promise<OAuthClient>; // RFC 7591 public client
+makePkce(): Promise<{ verifier; challenge }>;                               // S256
+pkceChallenge(verifier): Promise<string>;
+randomToken(bytes = 32): string;                                            // base64url, for state / nonce
+authorizationUrl(metadata, { clientId, redirectUri, challenge, state, resource?, scope?, nonce?, params? }): string;
+exchangeCode(metadata, { clientId, clientSecret? }, { code, verifier, redirectUri, resource? }): Promise<OAuthTokens>;
+refreshTokens(metadata, { clientId, clientSecret? }, { refreshToken, resource?, scope? }): Promise<OAuthTokens>;
+tokensExpireAt(tokens, receivedAt): number | undefined;
+wellKnownUrls(url, name): string[];  firstFound(urls, schema): Promise<T | undefined>;
+readOAuthAnswer(url, response, schema): Promise<T>;
+```
+
+- Discovery tries `/.well-known/oauth-authorization-server`, then
+  `/.well-known/openid-configuration`, each with the issuer's path inserted and then at the root,
+  then `<issuer>/.well-known/openid-configuration`. Nothing found: `OAuthError('no_metadata')`.
+- `registerClient` registers a public client (`token_endpoint_auth_method: 'none'`); a server
+  with no `registration_endpoint` throws `OAuthError('no_registration')`.
+- A confidential client's secret goes as HTTP Basic unless the server's
+  `token_endpoint_auth_methods_supported` leaves `client_secret_basic` out (then in the body).
+- An OAuth error answer throws `OAuthError` with its `error` code and description; an answer
+  that isn't JSON throws `http_<status>`; one that doesn't fit throws `invalid_answer`.
+- `OAuthTokens` includes `id_token?`. `resource` (RFC 8707) is sent only when given.
+
 ## API reference
 
 The **def factories** are on the main entry; the **`.server` binders** and the JWT primitives
@@ -366,11 +501,15 @@ See [Password hashing](#password-hashing). `cost` is log2 of scrypt's N, 1 to 24
 - **Def vs. impl entry points.** Import the def factories from `@ayepi/auth` and the
   `.server` binders + JWT primitives from `@ayepi/auth/server`. A spec that imports only
   `@ayepi/auth` is frontend-safe; `@ayepi/auth/server` pulls `node:crypto` and must stay out
-  of any browser bundle. `signJwt` / `verifyJwt` / `JwtError` moved to `@ayepi/auth/server` —
-  they are **no longer** exported from the main entry.
-- **HS256 only.** There is no RS256/ES256/`none` support — `signJwt` always signs HS256 and
-  `verifyJwt` rejects any other (or missing) `alg`. The header is the single source of
-  truth for the algorithm; an attacker cannot downgrade it.
+  of any browser bundle. `signJwt` / `verifyJwt` / `JwtError` are exported from
+  `@ayepi/auth/server` only. The OAuth/OIDC client lives on `@ayepi/auth/oauth`.
+- **HS256 for your own tokens.** `signJwt` always signs HS256 and `verifyJwt` rejects any
+  other (or missing) `alg`; an attacker cannot downgrade it. Tokens an outside provider signs
+  (RS256 / ES256 / EdDSA) are verified with `verifyIdToken` / `verifyJws` from
+  `@ayepi/auth/oauth`, which never accept `none` or HMAC.
+- **Keep the pending sign-in safe.** `OidcClient.begin` returns `pending` (state, nonce, PKCE
+  verifier, redirect). Keep it server-side or in a signed, HTTP-only cookie, and use it once; it
+  is what ties the callback to the browser that started the sign-in.
 - **Secret management.** The same `secret` signs and verifies, and lives only in the
   `.server` config — never in the def, never in a browser bundle. Keep it server-side and
   rotate deliberately (old tokens stop verifying when the secret changes — there is no

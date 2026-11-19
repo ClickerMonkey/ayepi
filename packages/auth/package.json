@@ -1,7 +1,7 @@
 {
   "name": "@ayepi/auth",
   "version": "0.5.0",
-  "description": "Authentication middleware for @ayepi/core — typed Bearer (JWT) and Basic auth with signing/verification, user context, and OpenAPI security docs",
+  "description": "Authentication for @ayepi/core — typed Bearer (JWT) and Basic auth middleware with user context and OpenAPI security docs, plus a web-standard OAuth 2 / OpenID Connect client (PKCE, JWKS, ID token verification)",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -27,6 +27,10 @@
       "import": { "types": "./dist/server.d.ts", "default": "./dist/server.js" },
       "require": { "types": "./dist/server.d.cts", "default": "./dist/server.cjs" }
     },
+    "./oauth": {
+      "import": { "types": "./dist/oauth.d.ts", "default": "./dist/oauth.js" },
+      "require": { "types": "./dist/oauth.d.cts", "default": "./dist/oauth.cjs" }
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -50,5 +54,5 @@
     "vitest": "^2.1.8",
     "zod": "^4.6.7"
   },
-  "keywords": ["ayepi", "auth", "jwt", "bearer", "basic-auth", "authentication", "middleware"]
+  "keywords": ["ayepi", "auth", "jwt", "bearer", "basic-auth", "authentication", "middleware", "oauth", "oidc", "openid-connect", "jwks", "pkce", "sso"]
 }

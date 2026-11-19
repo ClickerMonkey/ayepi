@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { jsonSchema } from '@ayepi/core';
 import { Listeners } from './listeners';
 import { errorResult, messageOf, type McpCaller, type McpToolSource } from './protocol';
 import type { McpTool, McpToolResult } from './shapes';
@@ -171,7 +172,7 @@ export class McpToolSet implements McpToolSource {
   }
 
   static #zod<S extends z.ZodType>(def: McpZodToolDefinition<S>): Defined {
-    const inputSchema = z.toJSONSchema(def.args, { io: 'input', unrepresentable: 'any' });
+    const inputSchema = jsonSchema(def.args);
     return { tool: { ...faceOf(def), inputSchema }, run: checked(def.name, def.args, def.run) };
   }
 

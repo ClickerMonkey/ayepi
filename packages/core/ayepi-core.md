@@ -224,6 +224,34 @@ Customize or disable individual pages with a `DocsOptions` object
 (`{ swagger: '/api-docs', redoc: false, info: { title, version } }`). The HTML builders
 `swaggerHtml`, `redocHtml`, `asyncapiHtml` are exported if you'd rather mount them yourself.
 
+### JSON Schema
+
+Every schema in the documents is zod's `z.toJSONSchema(schema, { io: 'input' })`, JSON Schema
+2020-12. Recursive helpers zod puts in `$defs` (e.g. `z.json()`) are lifted into
+`components.schemas`, and identical definitions — however they were named, recursive ones
+included — are merged into one component, so every `$ref` resolves within the document. A
+recursive root (a `z.lazy` that contains itself, or a supplied schema using `$ref: '#'`) refers to
+itself through a `$defs` copy, so it keeps meaning itself once nested in a document. A type
+zod can't represent (`z.custom()`, `z.function()`) is an open schema (`{}`).
+
+A schema whose real shape lives elsewhere (a `z.custom` checking another library's values)
+supplies it with `withJsonSchema`. The source is the JSON Schema or a function run once, on first
+use; its own `$defs` join the document's, and the schema's `.describe()`/`.meta()` is kept:
+
+```ts
+import { withJsonSchema } from '@ayepi/core'
+
+const TypeDef = withJsonSchema(z.custom<TypeDef>(isTypeDef), () => typeDefJsonSchema())
+```
+
+The same conversion is exported for other generators (`@ayepi/mcp` uses it for tool inputs):
+
+```ts
+jsonSchema(schema)          // JsonSchemaObject — input view, nested $defs gathered into the root
+schemaMembers(objectSchema) // { properties, required } — each property carries the $defs it needs
+collectSchemaDefs(json)     // gather every nested $defs into the root $defs, identical ones merged
+```
+
 ### Acquiring the manifest for the client
 
 The client routes from a **`Manifest`**. Get the manifest one of three ways:

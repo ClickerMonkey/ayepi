@@ -2,7 +2,8 @@
 
 Authentication middleware for [`@ayepi/core`](https://www.npmjs.com/package/@ayepi/core):
 **Bearer (JWT, HS256)** and **Basic** auth, fully typed, each contributing its own OpenAPI
-security scheme. JWT crypto is dependency-free (`node:crypto`, HS256 only).
+security scheme. JWT crypto is dependency-free (`node:crypto`, HS256 only). A web-standard
+OAuth 2 / OpenID Connect client signs people in through an outside provider.
 
 Each guard is split into a **def** (a frontend-safe contract you declare in your spec) and an
 **impl** (the server-side binding that supplies secrets and crypto):
@@ -12,6 +13,9 @@ Each guard is split into a **def** (a frontend-safe contract you declare in your
 - **`@ayepi/auth/server`** — the same `bearerAuth` / `basicAuth` augmented with a
   `.server(def, cfg)` binder, plus the `signJwt` / `verifyJwt` / `JwtError` primitives. This
   is the **only** entry that pulls in `node:crypto`; keep it out of the frontend bundle.
+- **`@ayepi/auth/oauth`** — a web-standard OAuth 2 + OpenID Connect client: discovery, PKCE,
+  code exchange and refresh, JWKS with rotation, ID token verification (RS256, ES256, EdDSA),
+  userinfo, and `OidcClient` for the whole sign-in flow.
 
 ```sh
 pnpm add @ayepi/auth @ayepi/core zod
@@ -120,6 +124,25 @@ const stored = await hashPassword('correct horse');      // scrypt$15$8$1$<salt>
 await verifyPassword('correct horse', stored);            // true; false for anything else
 ```
 
+## Sign in with an OpenID Connect provider
+
+```ts
+import { OidcClient, verifiedEmailOf } from '@ayepi/auth/oauth'
+
+const oidc = new OidcClient({ issuer: env.OIDC_ISSUER, clientId: env.OIDC_CLIENT_ID, clientSecret: env.OIDC_CLIENT_SECRET })
+
+const { url, pending } = await oidc.begin({ redirectUri: 'https://app.example/auth/callback' })
+// keep `pending` (signed cookie / server row) and redirect to `url`; then on the callback:
+const { claims } = await oidc.finish(new URL(request.url).searchParams, pending)
+claims.sub               // the account at this issuer
+verifiedEmailOf(claims)  // the email, only when the provider verified it
+```
+
+Discovery and the provider's key set are fetched once and kept; rotated keys are fetched when a
+token names one. `verifyIdToken`, `JwksCache`, `discoverOidc`, `fetchUserInfo` and the plain
+OAuth 2 functions (`makePkce`, `authorizationUrl`, `exchangeCode`, `refreshTokens`, …) are there
+for other flows.
+
 ## OpenAPI security docs
 
 Each def contributes a scheme automatically (the contract lives on the def, so the docs are
@@ -136,7 +159,8 @@ doc.paths['/me'].post.security           // [{ bearerAuth: [] }]
 
 - **Def vs. impl.** A spec that imports `@ayepi/auth` is frontend-safe — the `.server` binder
   and JWT crypto stay in `@ayepi/auth/server`, out of the browser bundle.
-- **HS256 only**, **`node:crypto` only** — no external JWT library.
+- Your own tokens: **HS256 only**, **`node:crypto` only**. Provider tokens: RS256 / ES256 /
+  EdDSA on WebCrypto. No external JWT library either way.
 - Keep `secret` server-side; rotating it invalidates existing tokens (no key-id window).
 - Your `claims` schema describes only custom claims — registered claims are handled for you.
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { spec, endpoint, server, implement } from '@ayepi/core';
+import { spec, endpoint, server, implement, withJsonSchema } from '@ayepi/core';
 import type { Server } from '@ayepi/core';
 import type { McpTool } from '../src/index';
 import { mcpTools, mcpServer, serveStdio } from '../src/index';
@@ -48,7 +48,7 @@ const api = spec({
       body: z.object({ caption: z.string() }),
       response: z.object({ size: z.number() }),
     }),
-    // object body containing an unrepresentable field -> object schema degrades to a placeholder
+    // object body containing an unrepresentable field -> that field is an open schema
     opaque: endpoint({
       body: z.object({ blob: z.custom<unknown>(() => true) }),
       response: z.object({ ok: z.boolean() }),
@@ -94,8 +94,8 @@ describe('mcpTools', () => {
       'upload',
     ]);
 
-    // an object body that zod can't render contributes no properties (degrades to an empty object)
-    expect(get('opaque').inputSchema).toEqual({ type: 'object', properties: {} });
+    // an object body with a field zod can't render keeps its other keys; that field accepts any value
+    expect(get('opaque').inputSchema).toEqual({ type: 'object', properties: { blob: {} }, required: ['blob'] });
 
     // description: summary preferred
     expect(get('getUser').description).toBe('Fetch a user by id');
@@ -129,15 +129,45 @@ describe('mcpTools', () => {
     expect(uploadSchema.properties.avatar!.description).toMatch(/file field/);
   });
 
-  it('degrades schemas zod cannot represent to a placeholder', () => {
-    // z.custom() (and similar) cannot be rendered as JSON Schema -> placeholder.
+  it('degrades schemas zod cannot represent to an open schema, not a string placeholder', () => {
     const weird = spec({
       endpoints: {
         odd: endpoint({ body: z.custom<string>(() => true), response: z.object({ ok: z.boolean() }) }),
+        field: endpoint({ body: z.object({ blob: z.custom<unknown>(() => true), n: z.number() }), response: z.object({ ok: z.boolean() }) }),
       },
     });
-    const [tool] = mcpTools(weird);
-    expect(tool!.inputSchema).toEqual({ type: 'string', description: 'unrepresentable schema' });
+    const [odd, field] = mcpTools(weird);
+    expect(odd!.inputSchema).toEqual({ $schema: 'https://json-schema.org/draft/2020-12/schema' });
+    expect(field!.inputSchema).toEqual({ type: 'object', properties: { blob: {}, n: { type: 'number' } }, required: ['blob', 'n'] });
+  });
+
+  it('uses the JSON Schema a custom schema supplies', () => {
+    const def = withJsonSchema(z.custom<{ name: string }>(() => true), { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] });
+    const custom = spec({
+      endpoints: {
+        whole: endpoint({ body: def, response: z.object({ ok: z.boolean() }) }),
+        part: endpoint({ body: z.object({ def }), response: z.object({ ok: z.boolean() }) }),
+      },
+    });
+    const [whole, part] = mcpTools(custom);
+    expect(whole!.inputSchema).toMatchObject({ type: 'object', required: ['name'] });
+    expect(part!.inputSchema).toEqual({ type: 'object', properties: { def: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } }, required: ['def'] });
+  });
+
+  it('gathers the $defs of every input part into the tool schema, so its refs resolve', () => {
+    // regression: properties lifted out of each part's JSON Schema left `#/$defs/…` refs dangling
+    const json = spec({
+      endpoints: {
+        put: endpoint({ method: 'POST', path: ':key', params: z.object({ key: z.string() }), query: z.object({ tag: z.json().optional() }), body: z.object({ value: z.json() }), response: z.object({ ok: z.boolean() }) }),
+      },
+    });
+    const [tool] = mcpTools(json);
+    const schema = tool!.inputSchema as { properties: Record<string, { $ref?: string }>; $defs?: Record<string, unknown>; required?: string[] };
+    expect(Object.keys(schema.$defs ?? {})).toHaveLength(1); // the json helper of query and body, merged
+    const [name] = Object.keys(schema.$defs!);
+    expect(schema.properties.tag!.$ref).toBe(`#/$defs/${name}`);
+    expect(schema.properties.value!.$ref).toBe(`#/$defs/${name}`);
+    expect(schema.required).toEqual(['key', 'value']);
   });
 
   it('filters via include and applies namePrefix', () => {

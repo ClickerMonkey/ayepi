@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { withJsonSchema } from '@ayepi/core';
 import {
   MCP_TOOL_NAME, McpToolSet, invalidArgumentsResult, jsonResult, mcpToolName, mcpToolServer, textResult,
   type McpCaller,
@@ -31,6 +32,12 @@ describe('McpToolSet', () => {
     expect(bad?.isError).toBe(true);
     expect(bad?.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('invalid arguments for tool "add"') });
     expect(await set.call('nope', {}, signal, caller)).toBeUndefined();
+  });
+
+  it('a zod tool lists the JSON Schema a custom argument supplies', () => {
+    const def = withJsonSchema(z.custom<{ name: string }>((v) => typeof v === 'object'), { type: 'object', properties: { name: { type: 'string' } } });
+    const set = new McpToolSet().define({ name: 'make', args: z.object({ def }), run: () => textResult('') });
+    expect(set.tools()[0]!.inputSchema).toMatchObject({ properties: { def: { type: 'object', properties: { name: { type: 'string' } } } } });
   });
 
   it('defines tools from JSON Schema, checked as zod reads it, or listed only', async () => {
