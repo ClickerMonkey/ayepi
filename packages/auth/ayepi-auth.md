@@ -411,11 +411,16 @@ refreshTokens(metadata, { clientId, clientSecret? }, { refreshToken, resource?, 
 tokensExpireAt(tokens, receivedAt): number | undefined;
 wellKnownUrls(url, name): string[];  firstFound(urls, schema): Promise<T | undefined>;
 readOAuthAnswer(url, response, schema): Promise<T>;
+isSecureEndpoint(url): boolean;  isLoopbackHost(hostname): boolean;  SecureEndpoint // zod
 ```
 
 - Discovery tries `/.well-known/oauth-authorization-server`, then
   `/.well-known/openid-configuration`, each with the issuer's path inserted and then at the root,
   then `<issuer>/.well-known/openid-configuration`. Nothing found: `OAuthError('no_metadata')`.
+- Every endpoint in the metadata (`authorization_endpoint`, `token_endpoint`,
+  `registration_endpoint`, and OIDC's `jwks_uri`, `userinfo_endpoint`, `end_session_endpoint`) must
+  be `https:`, or `http:` on a loopback host (`SecureEndpoint`); a document with any other URL
+  (`javascript:`, `data:`, plain http elsewhere) doesn't fit, so discovery skips it.
 - `registerClient` registers a public client (`token_endpoint_auth_method: 'none'`); a server
   with no `registration_endpoint` throws `OAuthError('no_registration')`.
 - A confidential client's secret goes as HTTP Basic unless the server's

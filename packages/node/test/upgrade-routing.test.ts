@@ -94,3 +94,48 @@ describe('closeAt', () => {
     expect(await ask(`ws://127.0.0.1:${port}/ws`)).toBe('browser');
   });
 });
+
+describe('maxPayload, admit and close', () => {
+  it('closes a socket that sends a message over maxPayload (1009)', async () => {
+    const port = await listen({ '/ws': upgradeHandler(named('browser'), { maxPayload: 64 }) });
+    const code = await new Promise<number>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      ws.on('open', () => ws.send('x'.repeat(1_000)));
+      ws.on('close', (c) => resolve(c));
+    });
+    expect(code).toBe(1009);
+  });
+
+  it('answers 429 to an upgrade admit refuses, reading the upgrade request', async () => {
+    const handler = upgradeHandler(named('browser'), { admit: (req) => Promise.resolve(new URL(req.url).searchParams.get('ok') === '1') });
+    const port = await listen({ '/ws': handler });
+    const status = await new Promise<number | undefined>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      ws.on('unexpected-response', (_req, res) => resolve(res.statusCode));
+      ws.on('error', () => resolve(undefined));
+    });
+    expect(status).toBe(429);
+    expect(await ask(`ws://127.0.0.1:${port}/ws?ok=1`)).toBe('browser');
+  });
+
+  it('answers 429 when the check throws, and admits at once when it says so synchronously', async () => {
+    const port = await listen({ '/a': upgradeHandler(named('a'), { admit: () => { throw new Error('boom'); } }), '/b': upgradeHandler(named('b'), { admit: () => true }) });
+    expect(await closeOf(`ws://127.0.0.1:${port}/a`)).toBe('error');
+    expect(await ask(`ws://127.0.0.1:${port}/b`)).toBe('b');
+  });
+
+  it('closes one of its sockets from the server side, with a code', async () => {
+    const api = spec({ endpoints: { who: endpoint({ ws: 'who', response: z.object({ name: z.string() }) }) } });
+    const app = server(api, [implement(api).handlers({ who: () => ({ name: 'x' }) })]);
+    const opened = app.ws.open.bind(app.ws);
+    app.ws.open = (send, req) => {
+      const conn = opened(send, req);
+      setTimeout(() => { handler.close(conn, 4010, 'bye'); }, 0);
+      return conn;
+    };
+    // read only once a socket opens, after this line
+    const handler: UpgradeHandler = upgradeHandler(app);
+    const port = await listen({ '/ws': handler });
+    expect(await closeOf(`ws://127.0.0.1:${port}/ws`)).toBe(4010);
+  });
+});

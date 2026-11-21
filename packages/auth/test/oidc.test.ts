@@ -41,6 +41,9 @@ describe('discoverOidc', () => {
     const url = `${ISSUER}/.well-known/openid-configuration`;
     await expect(discoverOidc(ISSUER, { fetch: table({ [url]: () => new Response('<html>') }) })).rejects.toMatchObject({ code: 'no_metadata' });
     await expect(discoverOidc(ISSUER, { fetch: table({ [url]: discovery({ jwks_uri: undefined }) }) })).rejects.toMatchObject({ code: 'no_metadata' });
+    for (const bad of [{ jwks_uri: 'http://idp.test/jwks' }, { userinfo_endpoint: 'javascript:alert(1)' }, { end_session_endpoint: 'data:text/html,x' }]) {
+      await expect(discoverOidc(ISSUER, { fetch: table({ [url]: discovery(bad) }) })).rejects.toMatchObject({ code: 'no_metadata' });
+    }
     await expect(discoverOidc(ISSUER, { fetch: table({ [url]: discovery({ issuer: 'https://evil.test' }) }) })).rejects.toMatchObject({ code: 'issuer_mismatch' });
   });
 });

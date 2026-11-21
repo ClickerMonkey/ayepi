@@ -21,12 +21,32 @@ export function fetchOf(opts: OAuthFetchOptions): typeof fetch {
   return opts.fetch ?? globalThis.fetch.bind(globalThis);
 }
 
-/** What an authorization server says about itself (RFC 8414, or OpenID Connect discovery). */
+/** A loopback host (`localhost`, `127.x.x.x`, `[::1]`), the one place plain http is allowed for an endpoint. */
+export function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'localhost' || host.endsWith('.localhost') || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host);
+}
+
+/**
+ * Whether a URL may be an OAuth endpoint: `https:`, or `http:` on a loopback host (RFC 8252 §8.3, RFC 8414 §2).
+ * Refuses every other scheme, so a server's metadata can't hand the client a `javascript:` or `data:` URL to open.
+ */
+export function isSecureEndpoint(url: string): boolean {
+  if (/[\s\u0000-\u001f\u007f]/.test(url)) { return false; }
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return false; }
+  return parsed.protocol === 'https:' || (parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname));
+}
+
+/** An endpoint URL in server metadata: https, or http only on a loopback host (`isSecureEndpoint`). */
+export const SecureEndpoint = z.string().refine(isSecureEndpoint, { message: 'expected an https URL (http only on localhost)' });
+
+/** What an authorization server says about itself (RFC 8414, or OpenID Connect discovery). Its endpoints must be https. */
 export const AuthorizationServerMetadata = z.object({
   issuer: z.string(),
-  authorization_endpoint: z.string(),
-  token_endpoint: z.string(),
-  registration_endpoint: z.string().optional(),
+  authorization_endpoint: SecureEndpoint,
+  token_endpoint: SecureEndpoint,
+  registration_endpoint: SecureEndpoint.optional(),
   scopes_supported: z.array(z.string()).optional(),
   code_challenge_methods_supported: z.array(z.string()).optional(),
   token_endpoint_auth_methods_supported: z.array(z.string()).optional(),

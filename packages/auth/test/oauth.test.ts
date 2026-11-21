@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   OAuthError, authorizationUrl, discoverAuthorizationServer, exchangeCode, firstFound, makePkce, pkceChallenge, randomToken, refreshTokens, registerClient,
-  tokensExpireAt, wellKnownUrls, type AuthorizationServerMetadata,
+  tokensExpireAt, wellKnownUrls, isSecureEndpoint, type AuthorizationServerMetadata,
 } from '../src/oauth';
 import { base64urlDecode } from '../src/base64url';
 import { table } from './issuer';
@@ -37,6 +37,22 @@ describe('the OAuth 2 client', () => {
     const root: Request[] = [];
     await expect(discoverAuthorizationServer('https://auth.test/', { fetch: table({}, root) })).rejects.toMatchObject({ code: 'no_metadata' });
     expect(root.map((request) => request.url)).toEqual(['https://auth.test/.well-known/oauth-authorization-server', 'https://auth.test/.well-known/openid-configuration']);
+  });
+
+  it('allows only https endpoints, or http on a loopback host', () => {
+    for (const url of ['https://auth.test/authorize', 'HTTPS://auth.test/x', 'http://localhost:4000/token', 'http://127.0.0.1/t', 'http://[::1]:9/t', 'http://a.localhost/t']) {
+      expect(isSecureEndpoint(url), url).toBe(true);
+    }
+    for (const url of ['javascript:alert(1)', 'JavaScript:alert(1)', 'data:text/html,<script>1</script>', 'vbscript:x', 'http://auth.test/authorize', 'ftp://auth.test/x', ' https://auth.test/x', 'java\tscript:alert(1)', 'https://auth.test/\nx', '/authorize', 'not a url']) {
+      expect(isSecureEndpoint(url), url).toBe(false);
+    }
+  });
+
+  it('refuses metadata whose endpoints are not https', async () => {
+    const url = 'https://auth.test/.well-known/oauth-authorization-server';
+    for (const bad of [{ authorization_endpoint: 'javascript:alert(document.cookie)' }, { token_endpoint: 'http://auth.test/token' }, { registration_endpoint: 'data:text/html,x' }]) {
+      await expect(discoverAuthorizationServer('https://auth.test', { fetch: table({ [url]: { ...AS, ...bad } }) })).rejects.toMatchObject({ code: 'no_metadata' });
+    }
   });
 
   it('registers a public client, or says it cannot', async () => {

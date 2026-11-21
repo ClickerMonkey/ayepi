@@ -127,6 +127,8 @@ interface SocketOptions {
   readonly heartbeat?: number;  // ping interval (ms); terminate on a missed pong
   readonly closeAt?: (req: Request) => number | undefined; // when to close (ms since the epoch)
   readonly clock?: () => number; // what closeAt is measured against; default Date.now
+  readonly maxPayload?: number; // largest message a socket may send (bytes); default ws's 100 MiB
+  readonly admit?: (req: Request) => boolean | Promise<boolean>; // take this upgrade? refused ones get 429
 }
 ```
 
@@ -139,6 +141,11 @@ interface SocketOptions {
   the socket, typically just before the credential it opened with expires. The socket is
   closed with code `EXPIRED_CLOSE_CODE` (4001); a client created with a URL function
   (`wsTransport(() => url)`) reconnects with the credential it holds now. `undefined` keeps it open.
+- `maxPayload` — the largest message a socket may send, in bytes. A bigger one closes the socket
+  with code 1009 before it reaches the app.
+- `admit` — read from the upgrade `Request` before it becomes a socket (to cap open sockets per
+  address, say). It may answer later (a promise). A refused upgrade, or one whose check throws, is answered
+  `429 Too Many Requests` and never reaches `app.ws.open`; an admitted one opens with that same `Request`.
 - The upgrade `Request` handed to `app.ws.open` carries a `signal` that aborts when the
   socket closes.
 - **Returns** the underlying `ws` `WebSocketServer` — call `.close()` to stop
@@ -155,14 +162,31 @@ const systems = upgradeHandler(link, { heartbeat: 30_000 })
 routeUpgrades(front, { '/ws': browser, '/link': systems }) // any other path is refused
 ```
 
-`upgradeHandler` takes the `SocketOptions` above and returns `{ sockets, upgrade(req, socket, head) }`:
+`upgradeHandler` takes the `SocketOptions` above and returns `{ sockets, upgrade(req, socket, head), close(conn, code?, reason?) }`:
 `sockets` is its `WebSocketServer` (`.clients`, `.close()`), and `upgrade` accepts one HTTP upgrade
-as a socket of that app, so an `upgrade` listener of your own can route by anything.
+as a socket of that app, so an `upgrade` listener of your own can route by anything. `close` closes one of
+its sockets (a `WsConn` the app was given) from the server side, with an optional close code and reason.
 `handleUpgrade` is `upgradeHandler` plus a single-path check.
 
 Use `createRequestListener` + `handleUpgrade` together when you need to build the
 `http.Server` yourself (custom TLS, mounting alongside other routes, etc.); use
 `serve` when you don't.
+
+### `remoteAddress(req)`
+
+```ts
+function remoteAddress(req: Request): string | undefined
+```
+
+The address of the TCP peer (`IncomingMessage.socket.remoteAddress`) a `Request` built by this adapter came from:
+an HTTP request handed to `createRequestListener`/`serve`, or a socket's upgrade `Request` (the one `app.ws.open`
+gets). It is the client itself, or the proxy in front of it; headers such as `X-Forwarded-For` are never read, so
+whether to trust a proxy stays the app's choice. `undefined` for a `Request` built anywhere else (a test's, an
+in-process call). Handlers read it from the `req` they receive:
+
+```ts
+signIn: ({ req }) => { const from = remoteAddress(req) ?? 'unknown'; … }
+```
 
 ## Examples
 

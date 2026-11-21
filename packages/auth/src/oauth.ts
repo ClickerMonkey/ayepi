@@ -17,7 +17,8 @@
 
 export {
   AuthorizationServerMetadata, OAuthClient, OAuthTokens, OAuthError, discoverAuthorizationServer, registerClient, randomToken, pkceChallenge, makePkce,
-  authorizationUrl, exchangeCode, refreshTokens, tokensExpireAt, wellKnownUrls, firstFound, readOAuthAnswer,
+  authorizationUrl, exchangeCode, refreshTokens, tokensExpireAt, wellKnownUrls, firstFound, readOAuthAnswer, SecureEndpoint, isSecureEndpoint,
+  isLoopbackHost,
   type OAuthFetchOptions, type ClientRegistration, type Pkce, type AuthorizationRequest, type TokenClient, type CodeExchange, type TokenRefresh,
 } from './oauth2';
 export {

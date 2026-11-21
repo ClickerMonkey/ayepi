@@ -27,7 +27,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { AnySpec, Server } from '@ayepi/core';
+import type { AnySpec, Server, WsConn } from '@ayepi/core';
 
 /** A minimal structural view of the ayepi server surface this adapter drives. */
 type AnyApp = Server<AnySpec>;
@@ -71,6 +71,17 @@ export interface SocketOptions {
   readonly closeAt?: (req: Request) => number | undefined;
   /** The clock `closeAt` is measured against (ms since the epoch). Default `Date.now`. */
   readonly clock?: () => number;
+  /**
+   * The largest message a socket may send, in bytes; a bigger one closes the socket (code 1009). Default `ws`'s
+   * own (100 MiB).
+   */
+  readonly maxPayload?: number;
+  /**
+   * Whether to take an upgrade, read from its `Request` before it becomes a socket (cap open sockets per address,
+   * say). A refused upgrade, or one whose check throws, is answered `429 Too Many Requests` and never reaches
+   * `app.ws.open`; the `Request` an admitted one opens with is this same object. Default: every one.
+   */
+  readonly admit?: (req: Request) => boolean | Promise<boolean>;
 }
 
 /** Options for {@link handleUpgrade}. */
@@ -88,6 +99,21 @@ export interface UpgradeHandler {
   readonly sockets: WebSocketServer;
   /** Accept an HTTP upgrade as a socket of this app. */
   upgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): void;
+  /** Close one of this handler's sockets from the server side (a no-op when it is closed or not this handler's). */
+  close(conn: WsConn, code?: number, reason?: string): void;
+}
+
+/** The socket address each request this adapter built came from (see {@link remoteAddress}). */
+const remotes = new WeakMap<Request, string | undefined>();
+
+/**
+ * The address of the TCP peer a `Request` this adapter built came from (`IncomingMessage.socket.remoteAddress`): the
+ * client itself, or the proxy in front of it. Works for HTTP requests and for a socket's upgrade `Request`; undefined
+ * for a request built anywhere else (a test's, an in-process call) or when the socket was already gone. Headers such
+ * as `X-Forwarded-For` are never read: whether to trust a proxy is the app's choice.
+ */
+export function remoteAddress(req: Request): string | undefined {
+  return remotes.get(req);
 }
 
 /** Build a fetch `Request` from a Node `IncomingMessage`, wiring an abort `signal`. */
@@ -109,7 +135,9 @@ function toRequest(req: http.IncomingMessage, signal: AbortSignal): Request {
     init.body = Readable.toWeb(req) as ReadableStream<Uint8Array>;
     init.duplex = 'half'; // required by undici when streaming a request body
   }
-  return new Request(url, init);
+  const request = new Request(url, init);
+  remotes.set(request, socket.remoteAddress);
+  return request;
 }
 
 /** Resolve once the response can accept more writes, or the socket closes. */
@@ -222,17 +250,19 @@ export function handleUpgrade(app: AnyApp, server: http.Server, options?: string
  * {@link routeUpgrades} or an `upgrade` listener of your own.
  */
 export function upgradeHandler(app: AnyApp, options: SocketOptions = {}): UpgradeHandler {
-  const { heartbeat, closeAt, clock = Date.now } = options;
-  const sockets = new WebSocketServer({ noServer: true });
+  const { heartbeat, closeAt, clock = Date.now, maxPayload, admit } = options;
+  const sockets = new WebSocketServer({ noServer: true, ...(maxPayload === undefined ? {} : { maxPayload }) });
+  const open = new WeakMap<WsConn, WebSocket>();
   return {
     sockets,
     upgrade(req, socket, head) {
-      sockets.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-        const closed = new AbortController();
-        const request = toRequest(req, closed.signal);
+      const closed = new AbortController();
+      const request = toRequest(req, closed.signal);
+      const accept = (): void => sockets.handleUpgrade(req, socket, head, (ws: WebSocket) => {
         const conn = app.ws.open((frame) => {
           if (ws.readyState === ws.OPEN) {ws.send(frame);}
         }, request);
+        open.set(conn, ws);
         const stopBeat = heartbeat === undefined ? () => {} : beat(ws, heartbeat);
         const stopExpiry = closeAt === undefined ? () => {} : expire(ws, closeAt(request), clock);
         const close = () => {
@@ -247,6 +277,17 @@ export function upgradeHandler(app: AnyApp, options: SocketOptions = {}): Upgrad
         ws.on('close', close);
         ws.on('error', close);
       });
+      if (admit === undefined) {
+        accept();
+        return;
+      }
+      const refuse = (): void => {
+        socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      };
+      void Promise.resolve().then(() => admit(request)).then((ok) => (ok ? accept() : refuse()), refuse);
+    },
+    close(conn, code, reason) {
+      open.get(conn)?.close(code, reason);
     },
   };
 }

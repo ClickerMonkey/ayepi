@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { JWS_ALGORITHMS, JwksCache, TokenError, verifyJws, type JwksCacheOptions, type JwsAlgorithm, type JwsKeySource } from './jwks';
 import {
-  AuthorizationServerMetadata, OAuthError, OAuthTokens, authorizationUrl, exchangeCode, fetchOf, makePkce, randomToken, readOAuthAnswer, refreshTokens,
+  AuthorizationServerMetadata, OAuthError, SecureEndpoint, OAuthTokens, authorizationUrl, exchangeCode, fetchOf, makePkce, randomToken, readOAuthAnswer, refreshTokens,
   type OAuthFetchOptions,
 } from './oauth2';
 
@@ -19,9 +19,9 @@ const DISCOVERY_SUFFIX = '/.well-known/openid-configuration';
 
 /** What an OpenID provider says about itself (Discovery 1.0 §3). */
 export const OidcMetadata = AuthorizationServerMetadata.extend({
-  jwks_uri: z.string(),
-  userinfo_endpoint: z.string().optional(),
-  end_session_endpoint: z.string().optional(),
+  jwks_uri: SecureEndpoint,
+  userinfo_endpoint: SecureEndpoint.optional(),
+  end_session_endpoint: SecureEndpoint.optional(),
   response_types_supported: z.array(z.string()).optional(),
   subject_types_supported: z.array(z.string()).optional(),
   id_token_signing_alg_values_supported: z.array(z.string()).optional(),
