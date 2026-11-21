@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/auth",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Authentication for @ayepi/core — typed Bearer (JWT) and Basic auth middleware with user context and OpenAPI security docs, plus a web-standard OAuth 2 / OpenID Connect client (PKCE, JWKS, ID token verification)",
   "license": "MIT",
   "publishConfig": {

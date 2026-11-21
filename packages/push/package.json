@@ -1,6 +1,6 @@
 {
   "name": "@ayepi/push",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Web push for any runtime — VAPID (RFC 8292) and aes128gcm payload encryption (RFC 8291) on WebCrypto, with zod-first subscription shapes",
   "license": "MIT",
   "publishConfig": {
